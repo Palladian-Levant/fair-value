@@ -37,7 +37,7 @@ test('sectors match well-known companies', () => {
   assert.equal(sectorOf(null), 'Other');
   assert.equal(sectorOf(7389, 'V'), 'Financials');
   assert.equal(sectorOf(5331, 'WMT'), 'Consumer staples');
-  assert.equal(sectorOf(7370, 'META'), 'Communication');
+  assert.equal(sectorOf(7370, 'META'), 'Technology');
   assert.equal(sectorOf(6324), 'Healthcare');
   assert.equal(sectorOf(3600), 'Industrials');
   assert.equal(sectorOf(3559), 'Technology');

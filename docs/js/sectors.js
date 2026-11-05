@@ -19,7 +19,6 @@ const RANGES = [
 const BY_TICKER = {
   V: 'Financials', MA: 'Financials', PYPL: 'Financials', AXP: 'Financials',
   WMT: 'Consumer staples', COST: 'Consumer staples', TGT: 'Consumer staples', DG: 'Consumer staples', DLTR: 'Consumer staples',
-  GOOGL: 'Communication', META: 'Communication', NFLX: 'Communication',
 };
 
 export const SECTORS = [...RANGES.map(([name]) => name), 'Other'].sort((a, b) => (a === 'Other') - (b === 'Other') || a.localeCompare(b));
