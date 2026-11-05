@@ -28,6 +28,7 @@ const TYPE_LABELS = {
   financial: 'Bank or insurer',
   lossMaking: 'Loss-making company',
   blank: 'Shell company',
+  tooNew: 'New filer',
 };
 
 function cyclicalIndustry(sic) {
@@ -81,7 +82,12 @@ function classify(co, tax) {
   const margins = hasCash.filter(r => r.revenue > 0).map(r => freeCashFlow(r, tax, false) / r.revenue);
   const ttmFcf = freeCashFlow(ttm, tax, false);
   const lastFcf = hasCash.length ? freeCashFlow(hasCash.at(-1), tax, false) : null;
+  if (!annual.length) return 'tooNew';
   if (!margins.length || !(ttm.revenue > 1e7)) return 'lossMaking';
+  // Heavy investment can absorb the cash of a profitable company.
+  const profits = rows.filter(r => r.revenue > 0 && r.netIncome != null).map(r => r.netIncome / r.revenue);
+  const reliablyProfitable = profits.length >= 2 && median(profits) > 0 && Math.min(...profits) > -0.02 && ttm.netIncome > 0;
+  if (reliablyProfitable && median(margins) < 0.25 * median(profits) && !cyclicalIndustry(sic)) return 'steady';
   if (median(margins) <= 0 || (ttmFcf <= 0 && lastFcf <= 0 && ttm.netIncome <= 0)) return 'lossMaking';
   if (cyclicalIndustry(sic)) return 'cyclical';
   const g = growthRates(co);
@@ -129,6 +135,12 @@ function defaultMargin(rows, ttmMargin, type) {
   const middle = median(all);
   const swing = all.length >= 3 ? stdev(all) / Math.abs(mean(all)) : 0;
   const profitMargins = rows.filter(r => r.netIncome != null).slice(-3).map(r => r.netIncome / r.revenue);
+  if (profitMargins.length && middle < 0.25 * median(profitMargins)) {
+    return {
+      value: clamp(median(profitMargins), 0.005, 0.6),
+      reason: 'Heavy investment is absorbing its cash, so this uses the recent profit margin instead.',
+    };
+  }
   if (swing > 0.25 && profitMargins.length) {
     // One-off items can distort cash for a year or two, while profit over several years is steadier.
     return {
@@ -364,10 +376,12 @@ function confidence(co, type, valuation, range, price) {
     if (valuation.meta.captive || valuation.meta.carMaker) dock(15, 'A finance arm makes the debt harder to judge.');
     if (co.balance.debt == null) dock(15, 'Debt could not be found in the filings.');
   }
-  if (price && range.base > 0 && Math.abs(range.base / price - 1) > 0.5) dock(15, 'The value is far from the share price, so the model may be missing something.');
+  const farFromPrice = price && range.base > 0 && Math.abs(range.base / price - 1) > 0.5;
+  if (farFromPrice) dock(15, 'The value is far from the share price, so the model may be missing something.');
   if (valuation.kind === 'dcf' && capexJumped(co)) dock(10, 'Investment spending has jumped, which holds down recent cash flow.');
   if (!valuation.meta.cost.betaKnown) dock(5, 'Share risk data was missing, so a market-average figure was used.');
   if (range.base > 0 && (range.bull - range.bear) / range.base > 1) dock(10, 'The range between low and high is very wide.');
+  if (farFromPrice) score = Math.min(score, 69);
   const level = score >= 70 ? 'High' : score >= 45 ? 'Medium' : 'Low';
   if (!reasons.length) reasons.push('Consistent results and a good fit for this method.');
   return { level, score, reasons };
@@ -422,14 +436,29 @@ function companyWarnings(co, market, warnings, type) {
   if (type === 'growth') warnings.push('The result leans heavily on growth that has not happened yet.');
 }
 
+const within = (a, b, tolerance) => a > 0 && b > 0 && Math.abs(a / b - 1) <= tolerance;
+
+// Filings can show one share class only, and market value can lag the price,
+// so market value only settles a real disagreement.
+function chooseShares(sec, market, impliedByValue) {
+  if (!sec) return market || impliedByValue || null;
+  if (market && !within(market, sec, 0.1)) {
+    if (!impliedByValue) return market;
+    const closest = Math.abs(market / impliedByValue - 1) < Math.abs(sec / impliedByValue - 1) ? market : sec;
+    return within(closest, impliedByValue, 0.35) ? closest : impliedByValue;
+  }
+  if (!market && impliedByValue && !within(impliedByValue, sec, 0.35)) return impliedByValue;
+  return sec;
+}
+
 // Builds everything the page needs for one company.
 export function analyse(co, marketInput = {}) {
   const market = { ...marketInput };
-  const finnhubShares = market.marketCap > 0 && market.price > 0 ? market.marketCap / market.price : market.finnhubShares;
   const secShares = co.shares?.val;
-  if (finnhubShares > 0 && (!secShares || Math.abs(finnhubShares / secShares - 1) > 0.1)) {
+  const shares = chooseShares(secShares, market.finnhubShares, market.marketCap > 0 && market.price > 0 ? market.marketCap / market.price : null);
+  if (shares && shares !== secShares) {
     market.shareMismatch = Boolean(secShares);
-    co = { ...co, shares: { val: finnhubShares, source: 'market data' } };
+    co = { ...co, shares: { val: shares, source: 'market data' } };
   }
   market.sharesUsed = co.shares?.val;
 
@@ -438,12 +467,13 @@ export function analyse(co, marketInput = {}) {
   const warnings = [];
   const label = TYPE_LABELS[type];
 
-  if (type === 'lossMaking' || type === 'blank' || !co.shares) {
-    const reason = !co.shares
-      ? 'Its share count could not be found in the filings, so a per-share value is not possible.'
-      : type === 'blank'
-        ? 'It is a shell company with no real business to value yet.'
-        : 'It has not produced steady cash or profit, so any fair value would be a guess about the far future.';
+  if (type === 'lossMaking' || type === 'blank' || type === 'tooNew' || !co.shares) {
+    const reasons = {
+      blank: 'It is a shell company with no real business to value yet.',
+      tooNew: 'Its filings do not include a full year of accounts yet.',
+      lossMaking: 'It has not produced steady cash or profit, so any fair value would be a guess about the far future.',
+    };
+    const reason = co.shares ? reasons[type] : 'Its share count could not be found in the filings, so a per-share value is not possible.';
     return { type, label, co, market, fairValueAvailable: false, reason, checks: senseChecks(co, market, null), warnings };
   }
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractCompany, UnsupportedFilerError } from '../docs/js/extract.js';
+import { extractCompany, mergeFacts, UnsupportedFilerError } from '../docs/js/extract.js';
 import { analyse, discountedCashFlow, residualIncome, impliedByPrice, valueRange } from '../docs/js/model.js';
 import { COMPANIES, buildFacts } from './fixtures.mjs';
 
@@ -199,9 +199,51 @@ test('a value far from the price and a capex jump both lower confidence', () => 
   const far = analyse(co, { ...market, price: 200 });
   assert.ok(far.confidence.reasons.some(r => r.includes('far from the share price')));
   assert.ok(far.confidence.score < near_.confidence.score);
+  assert.notEqual(far.confidence.level, 'High');
   const spending = structuredClone(co);
   spending.ttm.capex = co.ttm.revenue * 0.3;
   assert.ok(analyse(spending, { ...market, price: 60 }).confidence.reasons.some(r => r.includes('Investment spending')));
+});
+
+test('a lagging market value does not override matching share counts', () => {
+  const c = COMPANIES.KO;
+  const co = extractCompany(c.facts, { sic: c.sic });
+  const result = analyse(co, { price: 80, marketCap: 80 * 4302e6 * 1.25, finnhubShares: 4302e6, today: '2026-11-05' });
+  near(result.valuation.fixed.shares, 4302e6);
+  assert.ok(!result.warnings.some(w => w.includes('did not match')));
+});
+
+test('a new holding company keeps the history of the old one', () => {
+  const oldFacts = COMPANIES.KO.facts;
+  const newFacts = buildFacts({
+    name: 'NEW HOLDINGS', cik: 9, shares: 4302,
+    years: [],
+    balance: { asOf: '2026-09-30', items: { Assets: 110000, StockholdersEquity: 36000, CashAndCashEquivalentsAtCarryingValue: 9000 } },
+  });
+  const bare = extractCompany(newFacts, { sic: 2080 });
+  assert.equal(analyse(bare, { price: 80, today: '2026-11-05' }).type, 'tooNew');
+  const co = extractCompany(mergeFacts(newFacts, oldFacts), { sic: 2080 });
+  assert.equal(co.annual.length, 5);
+  assert.equal(co.balance.asOf, '2026-09-30');
+  assert.equal(co.name, 'NEW HOLDINGS');
+});
+
+test('a profitable company absorbing cash in investment still gets a value', () => {
+  const facts = buildFacts({
+    name: 'BIG INVESTOR', cik: 7, shares: 10000,
+    years: [
+      { end: '2022-12-31', revenue: 500000, netIncome: -2000, ocf: 46000, capex: 60000, sbc: 19000 },
+      { end: '2023-12-31', revenue: 570000, netIncome: 30000, ocf: 84000, capex: 52000, sbc: 24000 },
+      { end: '2024-12-31', revenue: 630000, netIncome: 59000, ocf: 115000, capex: 83000, sbc: 22000 },
+      { end: '2025-12-31', revenue: 710000, netIncome: 77000, ocf: 139000, capex: 131000, sbc: 19000 },
+    ],
+    balance: { asOf: '2025-12-31', items: { Assets: 900000, StockholdersEquity: 400000, CashAndCashEquivalentsAtCarryingValue: 80000, LongTermDebtNoncurrent: 100000 } },
+  });
+  const result = analyse(extractCompany(facts, { sic: 5961 }), { price: 200, beta: 1.2, riskFree: 0.049, today: '2026-11-05' });
+  assert.equal(result.type, 'steady');
+  assert.equal(result.fairValueAvailable, true);
+  assert.ok(result.valuation.assumptions.margin > 0.05);
+  assert.match(result.valuation.explain.margin, /Heavy investment/);
 });
 
 test('printed defaults for a review', () => {

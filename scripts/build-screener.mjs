@@ -3,7 +3,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { extractCompany, UnsupportedFilerError } from '../docs/js/extract.js';
+import { extractCompany, mergeFacts, UnsupportedFilerError } from '../docs/js/extract.js';
 import { analyse } from '../docs/js/model.js';
 import { sectorOf } from '../docs/js/sectors.js';
 
@@ -16,6 +16,9 @@ const LARGE_GAP = 1.5;
 const DATA_FOLDER = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'data');
 const OUTPUT = path.join(DATA_FOLDER, 'screener.json');
 const COMPANIES_OUTPUT = path.join(DATA_FOLDER, 'companies.json');
+
+// New holding companies start with no history at the SEC.
+const PREDECESSORS = { '0002115436': '0000034088' }; // ExxonMobil
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -120,7 +123,9 @@ export async function buildScreener({ tickers, sec, finnhub, plain, now = new Da
     if (index % 50 === 0) log(`${index} of ${candidates.length}`);
     const symbol = encodeURIComponent(candidate.ticker.replace('-', '.'));
     try {
-      const facts = await sec(`https://data.sec.gov/api/xbrl/companyfacts/CIK${candidate.cik}.json`);
+      let facts = await sec(`https://data.sec.gov/api/xbrl/companyfacts/CIK${candidate.cik}.json`);
+      const predecessor = PREDECESSORS[candidate.cik];
+      if (predecessor) facts = mergeFacts(facts, await sec(`https://data.sec.gov/api/xbrl/companyfacts/CIK${predecessor}.json`));
       const submissions = await sec(`https://data.sec.gov/submissions/CIK${candidate.cik}.json`);
       const company = extractCompany(facts, submissions);
       const quote = await finnhub(`https://finnhub.io/api/v1/quote?symbol=${symbol}`);

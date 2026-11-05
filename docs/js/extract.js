@@ -161,6 +161,19 @@ function shareCount(facts, gaap) {
   return null;
 }
 
+// Joins a new holding company's filings to the history of the company it replaced.
+export function mergeFacts(current, previous) {
+  const merged = structuredClone(current);
+  const target = merged.facts['us-gaap'] ??= {};
+  for (const [tag, fact] of Object.entries(previous.facts?.['us-gaap'] ?? {})) {
+    target[tag] ??= { units: {} };
+    for (const [unit, entries] of Object.entries(fact.units)) {
+      target[tag].units[unit] = [...entries, ...(target[tag].units[unit] ?? [])];
+    }
+  }
+  return merged;
+}
+
 export function extractCompany(factsFile, submissions = {}) {
   const facts = factsFile?.facts ?? {};
   const gaap = facts['us-gaap'];
