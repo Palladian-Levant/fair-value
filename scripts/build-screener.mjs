@@ -35,7 +35,7 @@ export function pickSeries(series = {}) {
   const picked = {};
   for (const key of SERIES_KEYS) {
     const points = (series[key] ?? []).slice(0, 10).filter(point => typeof point.v === 'number');
-    if (points.length) picked[key] = points.map(point => [point.period.slice(0, 4), Number(point.v.toFixed(3))]);
+    if (points.length) picked[key] = points.map(point => [String(point.period ?? '').slice(0, 4), Number(point.v.toFixed(3))]);
   }
   return picked;
 }
