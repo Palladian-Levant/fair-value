@@ -131,7 +131,8 @@ function balanceSheet(gaap) {
   const split = n(at('NotesAndLoansReceivableNetCurrent', 'FinancingReceivableExcludingAccruedInterestAfterAllowanceForCreditLossCurrent'))
     + n(at('NotesAndLoansReceivableNetNoncurrent', 'FinancingReceivableExcludingAccruedInterestAfterAllowanceForCreditLossNoncurrent'));
 
-  const longTermPieces = n(at('EquityMethodInvestments')) + n(at('MarketableSecuritiesNoncurrent', 'AvailableForSaleSecuritiesDebtSecuritiesNoncurrent'));
+  const longTermPieces = n(at('EquityMethodInvestments')) + n(at('MarketableSecuritiesNoncurrent', 'AvailableForSaleSecuritiesDebtSecuritiesNoncurrent'))
+    + n(at('OtherLongTermInvestments', 'EquitySecuritiesWithoutReadilyDeterminableFairValueAmount'));
 
   return {
     asOf,

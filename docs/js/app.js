@@ -185,11 +185,35 @@ function impliedText(a, assumptions) {
   if (a.valuation.kind === 'dcf') {
     if (implied.outOfRange === 'above') return 'The share price needs more growth than this model can reach, even starting at 100% a year.';
     if (implied.outOfRange === 'below') return 'The share price is low enough that it assumes the business shrinks heavily for years.';
-    return `To justify ${money(price)}, free cash flow would need to grow about ${percent(implied.averageGrowth, 0)} a year on average for 10 years, starting at ${percent(implied.value, 0)}.`;
+    return `On the cash flow forecast alone, ${money(price)} needs revenue and profit to grow about ${percent(implied.averageGrowth, 0)} a year on average for 10 years, starting at ${percent(implied.value, 0)}.`;
   }
   if (implied.outOfRange === 'above') return 'The share price needs a higher return on equity than this model can reach.';
   if (implied.outOfRange === 'below') return 'The share price assumes returns far below normal, held for good.';
   return `To justify ${money(price)}, the company would need to hold a return on equity of about ${percent(implied.value, 0)} for good. Today's default is ${percent(assumptions.roe, 0)}.`;
+}
+
+function renderMethods(a, range) {
+  const { anchors = [] } = a.valuation.fixed;
+  const modelShare = Math.round((1 - 0.25 * anchors.length) * 100);
+  const methods = [
+    { label: a.valuation.kind === 'dcf' ? 'Cash flow forecast' : 'Book value and returns', value: range.model, detail: `${modelShare}% of the fair value` },
+    ...anchors.map(anchor => ({ label: anchor.label, value: anchor.value, detail: `${anchor.detail}, 25% of the fair value` })),
+  ];
+  $('methods').replaceChildren(...methods.map(method => {
+    const group = document.createElement('div');
+    const term = document.createElement('dt');
+    term.textContent = method.label;
+    const detail = document.createElement('dd');
+    const figure = document.createElement('span');
+    figure.className = 'figure';
+    figure.textContent = whole(Math.max(method.value, 0));
+    const note = document.createElement('span');
+    note.className = 'note';
+    note.textContent = method.detail;
+    detail.append(figure, note);
+    group.append(term, detail);
+    return group;
+  }));
 }
 
 function refresh() {
@@ -200,6 +224,7 @@ function refresh() {
   $('subline').textContent = sub;
   renderScale(range, a.market.price);
   $('implied').textContent = impliedText(a, assumptions);
+  renderMethods(a, range);
   const defaults = a.valuation.assumptions;
   $('reset').disabled = Object.keys(defaults).every(key => defaults[key] === assumptions[key]);
 }
@@ -275,11 +300,11 @@ function renderChecks(checks) {
 function renderHistory(a) {
   const { annual, ttm, balance, shares } = a.co;
   const fcf = row => (row.ocf != null && row.capex != null ? row.ocf - row.capex - (row.sbc ?? 0) : null);
-  const rows = [...annual].map(row => [row.end.slice(0, 7), row.revenue, row.netIncome, fcf(row)]);
-  if (ttm.isTrailing) rows.push([`12 months to ${ttm.end.slice(0, 7)}`, ttm.revenue, ttm.netIncome, fcf(ttm)]);
+  const rows = [...annual].map(row => [row.end.slice(0, 7), row.revenue, row.opIncome, row.netIncome, fcf(row)]);
+  if (ttm.isTrailing) rows.push([`12 months to ${ttm.end.slice(0, 7)}`, ttm.revenue, ttm.opIncome, ttm.netIncome, fcf(ttm)]);
   const head = document.createElement('thead');
   const headRow = head.insertRow();
-  for (const text of ['Period', 'Revenue', 'Net profit', 'Free cash flow']) {
+  for (const text of ['Period', 'Revenue', 'Operating profit', 'Net profit', 'Free cash flow']) {
     const cell = document.createElement('th');
     cell.scope = 'col';
     cell.textContent = text;
@@ -311,6 +336,7 @@ function render() {
   $('tinker').hidden = !hasValue;
   $('trust').hidden = !hasValue;
   $('implied').hidden = !hasValue;
+  $('methods-section').hidden = !hasValue;
 
   if (hasValue) {
     $('confidence').replaceChildren();

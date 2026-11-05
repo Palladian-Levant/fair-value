@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { extractCompany, mergeFacts, UnsupportedFilerError } from '../docs/js/extract.js';
-import { analyse, discountedCashFlow, residualIncome, impliedByPrice, valueRange } from '../docs/js/model.js';
+import { addSectorMultiples, analyse, discountedCashFlow, residualIncome, impliedByPrice, valueRange } from '../docs/js/model.js';
 import { COMPANIES, buildFacts } from './fixtures.mjs';
 
 const near = (actual, expected, tolerance = 1e-6) =>
@@ -14,20 +14,32 @@ function run(key, overrides = {}) {
 }
 
 test('DCF matches a calculation written out by hand', () => {
-  const a = { growth: 0.025, margin: 0.2, rate: 0.1, terminal: 0.025 };
-  const fixed = { revenue: 1000, netClaims: 100, shares: 10, power: 1 };
-  let cash = 200; let pv = 0;
-  for (let t = 1; t <= 10; t += 1) { cash *= 1.025; pv += cash / 1.1 ** (t - 0.5); }
-  const tv = (cash * 1.025) / 0.075 / 1.1 ** 9.5;
+  const a = { growth: 0.025, margin: 0.25, rate: 0.1, terminal: 0.025, reinvestReturn: 0.2 };
+  const fixed = { revenue: 1000, tax: 0.2, netClaims: 100, shares: 10, power: 1 };
+  let revenue = 1000; let profit = 0; let pv = 0;
+  for (let t = 1; t <= 10; t += 1) {
+    revenue *= 1.025;
+    profit = revenue * 0.25 * 0.8;
+    pv += (profit * (1 - 0.025 / 0.2)) / 1.1 ** (t - 0.5);
+  }
+  const tv = (profit * 1.025 * (1 - 0.025 / 0.15)) / 0.075 / 1.1 ** 9.5;
   near(discountedCashFlow(a, fixed).perShare, (pv + tv - 100) / 10, 1e-9);
 });
 
 test('growth fades to the long-term rate by year 10', () => {
-  const a = { growth: 0.2, margin: 0.2, rate: 0.1, terminal: 0.02 };
-  const high = discountedCashFlow(a, { revenue: 100, netClaims: 0, shares: 1, power: 1 });
+  const a = { growth: 0.2, margin: 0.2, rate: 0.1, terminal: 0.02, reinvestReturn: 0.2 };
+  const high = discountedCashFlow(a, { revenue: 100, tax: 0.2, netClaims: 0, shares: 1, power: 1 });
   let compounded = 1;
   for (let t = 1; t <= 10; t += 1) compounded *= 1 + 0.02 + 0.18 * ((10 - t) / 9);
   near(high.averageGrowth, compounded ** 0.1 - 1, 1e-12);
+});
+
+test('faster growth needs more reinvestment, so a poor return adds little value', () => {
+  const fixed = { revenue: 1000, tax: 0.2, netClaims: 0, shares: 1, power: 1 };
+  const base = { margin: 0.2, rate: 0.1, terminal: 0.03 };
+  const good = discountedCashFlow({ ...base, growth: 0.15, reinvestReturn: 0.3 }, fixed).perShare;
+  const poor = discountedCashFlow({ ...base, growth: 0.15, reinvestReturn: 0.12 }, fixed).perShare;
+  assert.ok(good > poor * 1.3);
 });
 
 test('residual income equals book value when returns equal the required return', () => {
@@ -85,7 +97,7 @@ test('default assumptions stay inside their limits', () => {
     assert.ok(a.rate >= 0.08 && a.rate <= 0.12, key);
     assert.ok(a.growth >= 0 && a.growth <= 0.25, key);
     assert.ok(a.margin > 0 && a.margin <= 0.6, key);
-    assert.equal(a.terminal, 0.025);
+    assert.equal(a.terminal, 0.03);
   }
   const { assumptions: b } = run('JPM').valuation;
   assert.ok(b.rate >= 0.08 && b.rate <= 0.13);
@@ -175,14 +187,14 @@ test('a share class mismatch uses the market value', () => {
   assert.ok(result.range.base < 1000);
 });
 
-test('a rebound after negative cash flow is not treated as lasting growth', () => {
+test('a rebound after operating losses is not treated as lasting growth', () => {
   const facts = buildFacts({
     name: 'MEMORY CO', cik: 8, shares: 1000,
     years: [
-      { end: '2022-12-31', revenue: 30000, netIncome: 8000, ocf: 15000, capex: 12000 },
-      { end: '2023-12-31', revenue: 15000, netIncome: -6000, ocf: 1000, capex: 7000 },
-      { end: '2024-12-31', revenue: 25000, netIncome: 800, ocf: 8000, capex: 8000 },
-      { end: '2025-12-31', revenue: 60000, netIncome: 20000, ocf: 30000, capex: 13000 },
+      { end: '2022-12-31', revenue: 30000, opIncome: 9000, netIncome: 8000, ocf: 15000, capex: 12000 },
+      { end: '2023-12-31', revenue: 15000, opIncome: -5500, netIncome: -6000, ocf: 1000, capex: 7000 },
+      { end: '2024-12-31', revenue: 25000, opIncome: 1300, netIncome: 800, ocf: 8000, capex: 8000 },
+      { end: '2025-12-31', revenue: 60000, opIncome: 22000, netIncome: 20000, ocf: 30000, capex: 13000 },
     ],
     balance: { asOf: '2025-12-31', items: { Assets: 90000, StockholdersEquity: 60000, CashAndCashEquivalentsAtCarryingValue: 10000, LongTermDebtNoncurrent: 12000 } },
   });
@@ -232,10 +244,10 @@ test('a profitable company absorbing cash in investment still gets a value', () 
   const facts = buildFacts({
     name: 'BIG INVESTOR', cik: 7, shares: 10000,
     years: [
-      { end: '2022-12-31', revenue: 500000, netIncome: -2000, ocf: 46000, capex: 60000, sbc: 19000 },
-      { end: '2023-12-31', revenue: 570000, netIncome: 30000, ocf: 84000, capex: 52000, sbc: 24000 },
-      { end: '2024-12-31', revenue: 630000, netIncome: 59000, ocf: 115000, capex: 83000, sbc: 22000 },
-      { end: '2025-12-31', revenue: 710000, netIncome: 77000, ocf: 139000, capex: 131000, sbc: 19000 },
+      { end: '2022-12-31', revenue: 500000, opIncome: 12000, netIncome: -2000, ocf: 46000, capex: 60000, sbc: 19000 },
+      { end: '2023-12-31', revenue: 570000, opIncome: 36000, netIncome: 30000, ocf: 84000, capex: 52000, sbc: 24000 },
+      { end: '2024-12-31', revenue: 630000, opIncome: 68000, netIncome: 59000, ocf: 115000, capex: 83000, sbc: 22000 },
+      { end: '2025-12-31', revenue: 710000, opIncome: 80000, netIncome: 77000, ocf: 139000, capex: 131000, sbc: 19000 },
     ],
     balance: { asOf: '2025-12-31', items: { Assets: 900000, StockholdersEquity: 400000, CashAndCashEquivalentsAtCarryingValue: 80000, LongTermDebtNoncurrent: 100000 } },
   });
@@ -243,16 +255,61 @@ test('a profitable company absorbing cash in investment still gets a value', () 
   assert.equal(result.type, 'steady');
   assert.equal(result.fairValueAvailable, true);
   assert.ok(result.valuation.assumptions.margin > 0.05);
-  assert.match(result.valuation.explain.margin, /Heavy investment/);
 });
 
-test('printed defaults for a review', () => {
-  for (const key of ['KO', 'NVDA', 'F', 'JPM']) {
-    const r = run(key);
-    const a = r.valuation.assumptions;
-    console.log(key, r.label, Object.fromEntries(Object.entries(a).map(([k, v]) => [k, +(v * 100).toFixed(1)])),
-      'bear/base/bull', r.range.bear.toFixed(0), r.range.base.toFixed(0), r.range.bull.toFixed(0), 'price', COMPANIES[key].price,
-      r.confidence.level, r.confidence.score, 'tv', r.range.terminalShare.toFixed(2),
-      'implied', JSON.stringify(impliedByPrice(r.valuation, a, COMPANIES[key].price)));
-  }
+test('heavy investment is not counted as a cost and a source of growth', () => {
+  // Alphabet's real figures for 2025 and the 12 months to September 2026.
+  const facts = buildFacts({
+    name: 'ALPHABET INC', cik: 11, shares: 12294,
+    years: [
+      { end: '2022-12-31', revenue: 282836, opIncome: 74842, netIncome: 59972, pretax: 71328, tax: 11356, ocf: 91495, capex: 31485, sbc: 19362, equity: 256144 },
+      { end: '2023-12-31', revenue: 307394, opIncome: 84293, netIncome: 73795, pretax: 85717, tax: 11922, ocf: 101746, capex: 32251, sbc: 22460, equity: 283379 },
+      { end: '2024-12-31', revenue: 350018, opIncome: 112390, netIncome: 100118, pretax: 119815, tax: 19697, ocf: 125299, capex: 52535, sbc: 22785, equity: 325084 },
+      { end: '2025-12-31', revenue: 402836, opIncome: 129039, netIncome: 132170, pretax: 158826, tax: 26656, ocf: 164700, capex: 91400, sbc: 25000, equity: 415300 },
+    ],
+    ttm: { end: '2026-09-30', values: { revenue: 471098, opIncome: 156976, netIncome: 235694, pretax: 287637, tax: 51900, ocf: 179600, capex: 159800, sbc: 30400 } },
+    balance: { asOf: '2026-09-30', items: { Assets: 1000000, StockholdersEquity: 677500, CashAndCashEquivalentsAtCarryingValue: 56300, ShortTermInvestments: 208800, LongTermDebtNoncurrent: 127500 } },
+  });
+  const co = extractCompany(facts, { sic: 7370 });
+  const result = analyse(co, { price: 284.31, beta: 1.25, riskFree: 0.049, peHistory: [25, 22, 27], sectorPe: 30, today: '2026-11-05' });
+  assert.ok(result.valuation.assumptions.margin > 0.3);
+  assert.ok(result.range.model > 150, `forecast ${result.range.model}`);
+  assert.ok(result.range.base > 200, `blended ${result.range.base}`);
+  const earnings = result.checks.find(ch => ch.label === 'Price to earnings');
+  assert.match(earnings.note, /gains on investments/);
 });
+
+test('fair value blends the forecast with usual and sector multiples', () => {
+  const c = COMPANIES.KO;
+  const co = extractCompany(c.facts, { sic: c.sic });
+  const market = { price: c.price, beta: c.beta, riskFree: 0.049, today: '2026-11-05' };
+  const alone = analyse(co, market);
+  assert.deepEqual(alone.valuation.fixed.anchors, []);
+  near(alone.range.base, alone.range.model);
+  const full = analyse(co, { ...market, peHistory: [24, 22, 25], sectorPe: 20 });
+  const [history, sector] = full.valuation.fixed.anchors;
+  near(full.range.base, 0.5 * full.range.model + 0.25 * history.value + 0.25 * sector.value, 1e-9);
+  assert.ok(full.range.bear < full.range.base && full.range.base < full.range.bull);
+  const oneYear = analyse(co, { ...market, peHistory: [24] });
+  assert.equal(oneYear.valuation.fixed.anchors.length, 0);
+});
+
+test('sector multiples ignore loss-makers and extreme readings', () => {
+  const entry = (sic, value, profit) => ({
+    co: { sic, annual: [], ttm: { opIncome: profit, revenue: 100, netIncome: profit }, shares: { val: 1 } },
+    market: { price: value, marketCap: value },
+  });
+  const companies = {
+    A: entry(2080, 200, 10), B: entry(2080, 240, 10), C: entry(2080, 300, 10), D: entry(2080, 160, 10), E: entry(2080, 180, 10),
+    F: entry(2080, 900, -5), G: entry(2080, 5000, 10),
+  };
+  addSectorMultiples(companies);
+  near(companies.A.market.sectorPe, 200 / (10 * 0.79), 1e-9);
+  near(companies.F.market.sectorPe, companies.A.market.sectorPe);
+});
+
+test('health insurers use the forecast, not the bank method', () => {
+  const c = COMPANIES.KO;
+  assert.equal(analyse(extractCompany(c.facts, { sic: 6324 }), { price: c.price, today: '2026-11-05' }).valuation.kind, 'dcf');
+});
+

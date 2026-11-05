@@ -90,7 +90,7 @@ export async function initScreener() {
     const gaps = matching.map(row => row.gap).sort((a, b) => a - b);
     const typical = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
     $('screen-typical').textContent = gaps.length >= 5 && typical < -0.15
-      ? `The typical company here has a fair value ${Math.abs(typical * 100).toFixed(0)}% below its share price. These defaults are strict, so compare companies with each other rather than reading one gap alone.`
+      ? `The typical company here has a fair value ${Math.abs(typical * 100).toFixed(0)}% below its share price. Compare companies with each other rather than reading one gap alone.`
       : '';
 
     const body = document.createElement('tbody');

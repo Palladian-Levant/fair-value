@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extractCompany, mergeFacts, UnsupportedFilerError } from '../docs/js/extract.js';
-import { analyse } from '../docs/js/model.js';
+import { addSectorMultiples, analyse } from '../docs/js/model.js';
 import { sectorOf } from '../docs/js/sectors.js';
 
 const SEC_GAP_MS = 150;
@@ -104,6 +104,24 @@ async function latestRiskFree(request, now) {
   return undefined;
 }
 
+// Values every saved company. Sector multiples need the whole list first.
+export function scoreCompanies(companies, { keep = KEEP, notValued = [] } = {}) {
+  addSectorMultiples(companies);
+  const rows = [];
+  const missing = [...notValued];
+  for (const [ticker, entry] of Object.entries(companies)) {
+    const analysis = analyse(entry.co, entry.market);
+    const sector = sectorOf(entry.co.sic, ticker);
+    if (!analysis.fairValueAvailable) missing.push({ sector, reason: analysis.label });
+    else if (!(analysis.range.base > 0)) missing.push({ sector, reason: 'Debts exceed estimated value' });
+    else rows.push(rowFrom({ ticker }, analysis, entry.market.price));
+  }
+  rows.sort((a, b) => b.cap - a.cap);
+  const counts = {};
+  for (const { sector } of missing) counts[sector] = (counts[sector] ?? 0) + 1;
+  return { notValued: counts, rows: rows.slice(0, keep) };
+}
+
 export async function buildScreener({ tickers, sec, finnhub, plain, now = new Date(), log = () => {}, keep = KEEP, limit = CANDIDATES }) {
   const today = now.toISOString().slice(0, 10);
   let riskFree;
@@ -146,11 +164,6 @@ export async function buildScreener({ tickers, sec, finnhub, plain, now = new Da
         today,
       };
       companies[candidate.ticker] = { co: company, market };
-      const analysis = analyse(company, market);
-      const sector = sectorOf(company.sic, candidate.ticker);
-      if (!analysis.fairValueAvailable) notValued.push({ sector, reason: analysis.label });
-      else if (!(analysis.range.base > 0)) notValued.push({ sector, reason: 'Debts exceed estimated value' });
-      else rows.push(rowFrom(candidate, analysis, price));
     } catch (error) {
       // Foreign shares and funds in the SEC's list often have no accounts there.
       if (error instanceof UnsupportedFilerError || error.status === 404) notValued.push({ sector: 'Other', reason: 'Accounts not readable' });
@@ -158,16 +171,12 @@ export async function buildScreener({ tickers, sec, finnhub, plain, now = new Da
     }
   }
 
-  rows.sort((a, b) => b.cap - a.cap);
-  const kept = rows.slice(0, keep);
-  const counts = {};
-  for (const { sector } of notValued) counts[sector] = (counts[sector] ?? 0) + 1;
+  const scored = scoreCompanies(companies, { keep, notValued });
   return {
     generatedAt: now.toISOString(),
     attempted: candidates.length,
     failed,
-    notValued: counts,
-    rows: kept,
+    ...scored,
     companies,
   };
 }

@@ -19,18 +19,30 @@ Data comes from SEC EDGAR, Finnhub (share prices and risk data) and the US Treas
 
 ## How companies are valued
 
+Fair value blends up to three methods:
+
+- 50% from a 10-year forecast, or book value and returns for banks and insurers
+- 25% from the price to earnings investors have usually paid for that company
+- 25% from the typical price to earnings in its sector
+
+If a company has no usable multiple, the forecast takes a larger share. Each company's page
+shows all three figures. Companies are sorted into a type first:
+
 | Type | Method | Defaults |
 |---|---|---|
-| Steady | 10-year discounted cash flow | Growth 1–10%, middle margin of recent years |
+| Steady | 10-year discounted cash flow | Growth 1–10%, middle operating margin of recent years |
 | Fast grower | Same, with growth fading harder | Growth 5–25%, recent margins, wider range |
 | Cyclical | Same, using mid-cycle figures | Growth 0–4%, average margin across good and bad years |
 | Bank or insurer | Book value plus future excess returns | Return on equity from the last 5 years |
 | Loss-making or shell | None | No fair value is shown |
 
-- Free cash flow is operating cash flow minus capital spending and share-based pay.
+- The starting point is operating profit, which leaves out investment gains and already
+  counts share-based pay as a cost.
+- Each year's cash is profit after tax, less the reinvestment needed to pay for that
+  year's growth, based on the company's return on capital.
 - The discount rate uses the 10-year Treasury yield, a 4.5% equity risk premium, the
   company's beta and its cost of debt, held within 8–12%.
-- Growth fades to 2.5% by year 10.
+- Growth fades to 3% by year 10.
 - The confidence rating shows how well the method fits the company. It does not say
   whether the value is right.
 

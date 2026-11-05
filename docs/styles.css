@@ -306,6 +306,12 @@ li + li { margin-top: 0.25rem; }
 #checks .figure { display: block; font-family: "Bricolage Grotesque", system-ui, sans-serif; font-size: 1.75rem; font-weight: 650; line-height: 1.2; }
 #checks .note { color: var(--ink-soft); font-size: 0.9375rem; }
 
+#methods { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 1.25rem 2rem; margin: 1rem 0 0; }
+#methods dt { font-weight: 700; }
+#methods dd { margin: 0; }
+#methods .figure { display: block; font-family: "Bricolage Grotesque", system-ui, sans-serif; font-size: 1.75rem; font-weight: 650; line-height: 1.2; }
+#methods .note { color: var(--ink-soft); font-size: 0.9375rem; }
+
 #numbers { margin-top: 3rem; }
 #numbers summary { cursor: pointer; font-family: "Bricolage Grotesque", system-ui, sans-serif; font-size: 1.25rem; font-weight: 600; min-height: 44px; display: list-item; }
 .table-wrap { overflow-x: auto; margin-top: 0.75rem; }

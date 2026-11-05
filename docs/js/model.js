@@ -2,6 +2,8 @@
 // assumptions, and turns those assumptions into a fair value range.
 // All rates are fractions, so 0.05 means 5%.
 
+import { sectorOf } from './sectors.js';
+
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 const percent = (value, digits = 1) => `${(value * 100).toFixed(digits)}%`;
 const mean = list => list.reduce((sum, v) => sum + v, 0) / list.length;
@@ -18,7 +20,7 @@ const years = (from, to) => (Date.parse(to) - Date.parse(from)) / (365.25 * 864e
 
 const FALLBACK_RISK_FREE = 0.042;
 const EQUITY_RISK_PREMIUM = 0.045;
-const TERMINAL_GROWTH = 0.025;
+const TERMINAL_GROWTH = 0.03;
 const FORECAST_YEARS = 10;
 
 const TYPE_LABELS = {
@@ -48,10 +50,21 @@ function taxRate(rows) {
   return rates.length ? clamp(median(rates), 0.1, 0.3) : 0.21;
 }
 
-function freeCashFlow(row, tax, addBackInterest) {
-  if (row.ocf == null || row.capex == null) return null;
-  const interest = addBackInterest ? (row.interest ?? 0) * (1 - tax) : 0;
-  return row.ocf - row.capex - (row.sbc ?? 0) + interest;
+// Operating profit leaves out investment gains and already counts
+// share-based pay as a cost, so it shows what the business itself earns.
+function operatingProfit(row, tax) {
+  if (row.opIncome != null) return row.opIncome;
+  if (row.pretax != null) return row.pretax + (row.interest ?? 0);
+  return row.netIncome != null ? row.netIncome / (1 - tax) : null;
+}
+
+function operatingMargin(row, tax) {
+  const profit = operatingProfit(row, tax);
+  return profit != null && row.revenue > 0 ? profit / row.revenue : null;
+}
+
+function cashAfterCosts(row) {
+  return row.ocf != null && row.capex != null ? row.ocf - row.capex - (row.sbc ?? 0) : null;
 }
 
 function growthRates(co) {
@@ -76,26 +89,22 @@ function growthRates(co) {
 function classify(co, tax) {
   const { sic, annual, ttm } = co;
   if (sic === 6770) return 'blank';
-  if (sic >= 6000 && sic <= 6411) return 'financial';
+  // Health insurers (6324) earn operating margins like other healthcare companies.
+  if (sic >= 6000 && sic <= 6411 && sic !== 6324) return 'financial';
   const rows = annual.slice(-5);
-  const hasCash = rows.filter(r => freeCashFlow(r, tax, false) != null);
-  const margins = hasCash.filter(r => r.revenue > 0).map(r => freeCashFlow(r, tax, false) / r.revenue);
-  const ttmFcf = freeCashFlow(ttm, tax, false);
-  const lastFcf = hasCash.length ? freeCashFlow(hasCash.at(-1), tax, false) : null;
   if (!annual.length) return 'tooNew';
+  const margins = rows.map(r => operatingMargin(r, tax)).filter(v => v != null);
+  const latest = operatingMargin(ttm, tax);
   if (!margins.length || !(ttm.revenue > 1e7)) return 'lossMaking';
-  // Heavy investment can absorb the cash of a profitable company.
-  const profits = rows.filter(r => r.revenue > 0 && r.netIncome != null).map(r => r.netIncome / r.revenue);
-  const reliablyProfitable = profits.length >= 2 && median(profits) > 0 && Math.min(...profits) > -0.02 && ttm.netIncome > 0;
-  if (reliablyProfitable && median(margins) < 0.25 * median(profits) && !cyclicalIndustry(sic)) return 'steady';
-  if (median(margins) <= 0 || (ttmFcf <= 0 && lastFcf <= 0 && ttm.netIncome <= 0)) return 'lossMaking';
+  const recentLosses = margins.length >= 2 && margins.at(-1) <= 0 && margins.at(-2) <= 0 && (latest ?? 0) <= 0;
+  if (median(margins) <= 0 || recentLosses) return 'lossMaking';
   if (cyclicalIndustry(sic)) return 'cyclical';
   const g = growthRates(co);
-  // A fast rebound after negative cash flow is a cycle, not steady growth.
+  // A fast rebound after operating losses is a cycle, not steady growth.
   if (Math.max(g.short ?? 0, g.long ?? 0) >= 0.15 && Math.min(...margins) > 0) return 'growth';
   const swing = margins.length >= 3 ? stdev(margins) / Math.abs(mean(margins)) : 0;
   const lossYears = rows.filter(r => r.netIncome < 0).length;
-  if (swing > 0.6 || lossYears >= 2) return 'cyclical';
+  if (swing > 0.6 || lossYears >= 2 || Math.min(...margins) < 0) return 'cyclical';
   return 'steady';
 }
 
@@ -103,7 +112,8 @@ function capitalCost(co, market, tax) {
   const riskFree = market.riskFree ?? FALLBACK_RISK_FREE;
   const betaRaw = market.beta;
   const betaKnown = typeof betaRaw === 'number' && betaRaw > 0;
-  const beta = betaKnown ? clamp(betaRaw, 0.6, 1.8) : 1;
+  // Measured betas drift towards 1 over time, so extreme readings are pulled in.
+  const beta = betaKnown ? clamp(0.67 * betaRaw + 0.33, 0.6, 1.8) : 1;
   const equityCost = riskFree + beta * EQUITY_RISK_PREMIUM;
   return { riskFree, riskFreeLive: market.riskFree != null, beta, betaKnown, equityCost, tax };
 }
@@ -132,23 +142,16 @@ function defaultMargin(rows, ttmMargin, type) {
   if (type === 'cyclical') {
     return { value: clamp(mean(all), 0.005, 0.6), reason: `Average across ${all.length} periods, covering good and bad years.` };
   }
-  const middle = median(all);
-  const swing = all.length >= 3 ? stdev(all) / Math.abs(mean(all)) : 0;
-  const profitMargins = rows.filter(r => r.netIncome != null).slice(-3).map(r => r.netIncome / r.revenue);
-  if (profitMargins.length && middle < 0.25 * median(profitMargins)) {
-    return {
-      value: clamp(median(profitMargins), 0.005, 0.6),
-      reason: 'Heavy investment is absorbing its cash, so this uses the recent profit margin instead.',
-    };
-  }
-  if (swing > 0.25 && profitMargins.length) {
-    // One-off items can distort cash for a year or two, while profit over several years is steadier.
-    return {
-      value: clamp((middle + median(profitMargins)) / 2, 0.005, 0.6),
-      reason: 'Cash flow has jumped around, so this blends the middle cash margin with the recent profit margin.',
-    };
-  }
-  return { value: clamp(middle, 0.005, 0.6), reason: `Middle value across ${all.length} periods, so one unusual year does not skew it.` };
+  return { value: clamp(median(all), 0.005, 0.6), reason: `Middle value across ${all.length} periods, so one unusual year does not skew it.` };
+}
+
+// How much profit a company earns on the money tied up in the business.
+function returnOnCapital(co, margin, tax) {
+  const { balance, ttm } = co;
+  const capital = (balance.equity ?? 0) + (balance.debt ?? 0) + (balance.noncontrolling ?? 0)
+    - (balance.cash ?? 0) - (balance.shortTermInvestments ?? 0) - (balance.longTermInvestments ?? 0);
+  const profit = ttm.revenue * margin * (1 - tax);
+  return capital > 0 ? profit / capital : null;
 }
 
 function buildDcf(co, market, type, warnings) {
@@ -157,16 +160,13 @@ function buildDcf(co, market, type, warnings) {
   const receivableShare = balance.assets ? balance.financeReceivables / balance.assets : 0;
   const carMaker = co.sic >= 3711 && co.sic <= 3716;
   const captive = receivableShare > 0.25;
-  const addBack = !captive && !carMaker;
   const g = growthRates(co);
 
   const rows = annual
-    .map(r => ({ ...r, fcf: freeCashFlow(r, tax, addBack) }))
-    .filter(r => r.fcf != null && r.revenue > 0)
-    .map(r => ({ ...r, margin: r.fcf / r.revenue }))
+    .map(r => ({ ...r, margin: operatingMargin(r, tax) }))
+    .filter(r => r.margin != null)
     .slice(-5);
-  const ttmFcf = freeCashFlow(ttm, tax, addBack);
-  const ttmMargin = ttm.revenue > 0 && ttmFcf != null ? ttmFcf / ttm.revenue : null;
+  const ttmMargin = operatingMargin(ttm, tax);
 
   const cost = capitalCost(co, market, tax);
   const growth = defaultGrowth(g, type);
@@ -186,6 +186,8 @@ function buildDcf(co, market, type, warnings) {
     revenueBase = mean(ttm.isTrailing ? [...recent, ttm.revenue] : recent);
   }
 
+  const measuredReturn = returnOnCapital(co, margin.value, tax);
+  const newInvestmentReturn = clamp(measuredReturn ?? 0.2, rate + 0.02, 0.3);
   const receivablesOffset = usesFinanceDebt ? Math.min(balance.financeReceivables, debt) : 0;
   if (captive) warnings.push('This company runs a finance arm. Debt that funds its customer loans has been netted against those loans.');
   else if (carMaker) warnings.push('This company likely runs a finance arm, but its customer loans could not be found. Debt may be overstated, so treat the value with care.');
@@ -201,22 +203,28 @@ function buildDcf(co, market, type, warnings) {
     : `Treasury yield ${percent(cost.riskFree)} plus ${cost.beta.toFixed(2)} × ${percent(EQUITY_RISK_PREMIUM)} for share risk, blended with the cost of its debt`;
   const rateReason = `${rateParts}${rawRate !== rate ? `, then held within 8–12%` : ''}.`;
 
-  const assumptions = { growth: growth.value, margin: margin.value, rate, terminal: TERMINAL_GROWTH };
+  const returnReason = measuredReturn == null
+    ? 'Its invested capital could not be measured, so a typical figure was used.'
+    : `It earns about ${percent(measuredReturn, 0)} on the money in the business, held within sensible limits. Faster growth needs more reinvestment.`;
+
+  const assumptions = { growth: growth.value, margin: margin.value, rate, terminal: TERMINAL_GROWTH, reinvestReturn: newInvestmentReturn };
   return {
     kind: 'dcf',
     assumptions,
-    fixed: { revenue: revenueBase, netClaims, shares: co.shares?.val ?? null, power: type === 'growth' ? 1.5 : 1, spreadG, spreadM },
+    fixed: { revenue: revenueBase, tax, netClaims, shares: co.shares?.val ?? null, power: type === 'growth' ? 1.5 : 1, spreadG, spreadM },
     explain: {
       growth: growth.reason,
       margin: margin.reason,
       rate: rateReason,
       terminal: 'Roughly long-run economic growth, because no company can outgrow the economy forever.',
+      reinvestReturn: returnReason,
     },
     sliders: [
       { key: 'growth', label: 'Growth next year', help: 'Fades down each year to the long-term rate', min: -0.1, max: Math.max(0.3, growth.value + 0.1), step: 0.005 },
-      { key: 'margin', label: 'Free cash flow margin', help: 'Cash left from each $1 of sales', min: 0, max: Math.max(0.6, margin.value + 0.1), step: 0.005 },
+      { key: 'margin', label: 'Operating margin', help: 'Operating profit from each $1 of sales', min: 0, max: Math.max(0.6, margin.value + 0.1), step: 0.005 },
       { key: 'rate', label: 'Discount rate', help: 'The yearly return you want for the risk', min: 0.06, max: 0.15, step: 0.0025 },
       { key: 'terminal', label: 'Long-term growth', help: 'Growth after year 10', min: 0, max: 0.04, step: 0.0025 },
+      { key: 'reinvestReturn', label: 'Return on new investment', help: 'Profit earned on money put back into the business', min: 0.08, max: 0.4, step: 0.005 },
     ],
     meta: { rows, ttmMargin, tax, cost, g, captive, carMaker },
   };
@@ -266,22 +274,31 @@ function buildResidual(co, market, warnings) {
   };
 }
 
-// Discounted cash flow. Cash arrives through each year, so flows are
-// discounted from the middle of the year.
+// Discounted cash flow built from operating profit. Each year's cash is the
+// profit after tax, less what must be reinvested to pay for that year's growth.
+// This treats heavy investment as a choice that earns a return, and stops the
+// model counting it as both a permanent cost and a source of growth.
+// Cash arrives through each year, so flows are discounted from mid-year.
 export function discountedCashFlow(a, fixed) {
   const rate = a.rate;
   const terminal = Math.min(a.terminal, rate - 0.03);
-  let cash = fixed.revenue * a.margin;
+  const reinvestReturn = Math.max(a.reinvestReturn, 0.01);
+  let revenue = fixed.revenue;
+  let profit = 0;
   let presentValue = 0;
   let compounded = 1;
   for (let year = 1; year <= FORECAST_YEARS; year += 1) {
     const weight = ((FORECAST_YEARS - year) / (FORECAST_YEARS - 1)) ** fixed.power;
     const g = terminal + (a.growth - terminal) * weight;
-    cash *= 1 + g;
+    revenue *= 1 + g;
     compounded *= 1 + g;
-    presentValue += cash / (1 + rate) ** (year - 0.5);
+    profit = revenue * a.margin * (1 - fixed.tax);
+    presentValue += (profit * (1 - g / reinvestReturn)) / (1 + rate) ** (year - 0.5);
   }
-  const terminalValue = (cash * (1 + terminal)) / (rate - terminal) / (1 + rate) ** (FORECAST_YEARS - 0.5);
+  // Competition pulls returns on new investment down over the long run.
+  const longReturn = Math.max(Math.min(reinvestReturn, Math.max(rate + 0.02, 0.15)), terminal + 0.01);
+  const terminalCash = profit * (1 + terminal) * (1 - terminal / longReturn);
+  const terminalValue = terminalCash / (rate - terminal) / (1 + rate) ** (FORECAST_YEARS - 0.5);
   const enterprise = presentValue + terminalValue;
   return {
     perShare: (enterprise - fixed.netClaims) / fixed.shares,
@@ -308,6 +325,62 @@ export function residualIncome(a, fixed) {
   return { perShare: total, terminalShare: Math.abs(terminalValue) / Math.abs(total) };
 }
 
+// Fair value blends the cash flow model with what investors usually pay for
+// these earnings, so a forecast from past results is not the only opinion.
+const ANCHOR_WEIGHT = 0.25;
+
+function blended(modelValue, anchors = [], factor = 1) {
+  const anchorTotal = anchors.reduce((sum, anchor) => sum + ANCHOR_WEIGHT * anchor.value * factor, 0);
+  return (1 - ANCHOR_WEIGHT * anchors.length) * modelValue + anchorTotal;
+}
+
+function earningsPerShare(valuation) {
+  const { fixed, assumptions: a } = valuation;
+  if (valuation.kind === 'dcf') return (fixed.revenue * a.margin * (1 - fixed.tax)) / fixed.shares;
+  return a.roe * fixed.bvps;
+}
+
+function buildAnchors(valuation, market) {
+  const eps = earningsPerShare(valuation);
+  if (!(eps > 0)) return [];
+  const anchors = [];
+  const history = (market.peHistory ?? []).filter(v => v > 5 && v < 100);
+  if (history.length >= 3) {
+    const multiple = clamp(median(history), 8, 45);
+    anchors.push({ key: 'history', label: 'Its usual price to earnings', detail: `${multiple.toFixed(1)} times normal earnings`, value: eps * multiple });
+  }
+  if (market.sectorPe > 0) {
+    const multiple = clamp(market.sectorPe, 8, 45);
+    anchors.push({ key: 'sector', label: 'Sector price to earnings', detail: `${multiple.toFixed(1)} times normal earnings`, value: eps * multiple });
+  }
+  return anchors;
+}
+
+// The typical price to earnings in each sector, using operating profit so that
+// one-off gains do not distort it. Saved with each company by the nightly update.
+export function addSectorMultiples(companies) {
+  const bySector = {};
+  const all = [];
+  for (const [ticker, entry] of Object.entries(companies)) {
+    const tax = taxRate(entry.co.annual);
+    const value = entry.market.marketCap ?? entry.market.price * (entry.co.shares?.val ?? 0);
+    const profit = entry.co.sic >= 6000 && entry.co.sic <= 6411 && entry.co.sic !== 6324
+      ? entry.co.ttm.netIncome
+      : (operatingProfit(entry.co.ttm, tax) ?? 0) * (1 - tax);
+    if (!(value > 0) || !(profit > 0)) continue;
+    const multiple = value / profit;
+    if (multiple > 80) continue;
+    (bySector[sectorOf(entry.co.sic, ticker)] ??= []).push(multiple);
+    all.push(multiple);
+  }
+  for (const [ticker, entry] of Object.entries(companies)) {
+    const peers = bySector[sectorOf(entry.co.sic, ticker)] ?? [];
+    const group = peers.length >= 5 ? peers : all;
+    entry.market.sectorPe = group.length ? median(group) : undefined;
+  }
+  return companies;
+}
+
 function runBase(valuation, a) {
   return valuation.kind === 'dcf' ? discountedCashFlow(a, valuation.fixed) : residualIncome(a, valuation.fixed);
 }
@@ -321,14 +394,26 @@ export function valueRange(valuation, a) {
       growth: a.growth + sign * fixed.spreadG,
       margin: a.margin * (1 + sign * fixed.spreadM),
     }, fixed).perShare;
-    return { bear: shift(-1), base: base.perShare, bull: shift(1), terminalShare: base.terminalShare };
+    return {
+      bear: blended(shift(-1), fixed.anchors, 0.85),
+      base: blended(base.perShare, fixed.anchors),
+      bull: blended(shift(1), fixed.anchors, 1.15),
+      model: base.perShare,
+      terminalShare: base.terminalShare,
+    };
   }
   const shift = sign => residualIncome({
     ...a,
     roe: a.roe + sign * fixed.spreadR,
     roeLong: a.roeLong + sign * fixed.spreadLong,
   }, fixed).perShare;
-  return { bear: shift(-1), base: base.perShare, bull: shift(1), terminalShare: base.terminalShare };
+  return {
+    bear: blended(shift(-1), fixed.anchors, 0.85),
+    base: blended(base.perShare, fixed.anchors),
+    bull: blended(shift(1), fixed.anchors, 1.15),
+    model: base.perShare,
+    terminalShare: base.terminalShare,
+  };
 }
 
 // Works out what the current share price assumes, by searching for the
@@ -370,15 +455,17 @@ function confidence(co, type, valuation, range, price) {
   if (range.terminalShare > 0.8) dock(10, 'Most of the value comes from after year 10.');
   if (valuation.kind === 'dcf') {
     const margins = valuation.meta.rows.map(r => r.margin);
-    if (margins.length >= 3 && stdev(margins) / Math.abs(mean(margins)) > 0.35) dock(15, 'Cash flow has swung a lot from year to year.');
-    if (valuation.meta.rows.some(r => r.fcf < 0)) dock(10, 'Free cash flow has been negative in a recent year.');
+    if (margins.length >= 3 && stdev(margins) / Math.abs(mean(margins)) > 0.35) dock(15, 'Operating profit has swung a lot from year to year.');
+    if (margins.some(m => m < 0)) dock(10, 'It has made an operating loss in a recent year.');
     if (co.ttm.netIncome < 0) dock(10, 'The company made a loss over the latest period.');
     if (valuation.meta.captive || valuation.meta.carMaker) dock(15, 'A finance arm makes the debt harder to judge.');
     if (co.balance.debt == null) dock(15, 'Debt could not be found in the filings.');
   }
   const farFromPrice = price && range.base > 0 && Math.abs(range.base / price - 1) > 0.5;
+  const estimates = [range.model, ...(valuation.fixed.anchors ?? []).map(anchor => anchor.value)].filter(v => v > 0);
+  if (estimates.length >= 2 && Math.max(...estimates) > 2.5 * Math.min(...estimates)) dock(10, 'The valuation methods disagree widely.');
   if (farFromPrice) dock(15, 'The value is far from the share price, so the model may be missing something.');
-  if (valuation.kind === 'dcf' && capexJumped(co)) dock(10, 'Investment spending has jumped, which holds down recent cash flow.');
+  if (valuation.kind === 'dcf' && capexJumped(co)) dock(10, 'Investment spending has jumped. The value assumes it earns a good return.');
   if (!valuation.meta.cost.betaKnown) dock(5, 'Share risk data was missing, so a market-average figure was used.');
   if (range.base > 0 && (range.bull - range.bear) / range.base > 1) dock(10, 'The range between low and high is very wide.');
   if (farFromPrice) score = Math.min(score, 69);
@@ -393,23 +480,27 @@ function senseChecks(co, market, valuation) {
   const shares = market.sharesUsed ?? co.shares?.val;
   if (!price || !shares) return checks;
   const marketCap = price * shares;
-  const earnings = co.ttm.netIncome;
+  const tax = taxRate(co.annual);
+  const coreProfit = operatingProfit(co.ttm, tax);
+  const oneOffGains = co.ttm.pretax > 0 && coreProfit > 0 && co.ttm.pretax > coreProfit * 1.25;
+  // Large investment gains flatter net profit, so use operating profit after tax.
+  const earnings = oneOffGains ? coreProfit * (1 - tax) : co.ttm.netIncome;
   if (earnings > 0) {
     const pe = marketCap / earnings;
     const history = (peHistory ?? []).filter(v => v > 0 && v < 500);
-    let note = 'No past figures available to compare.';
+    let note = oneOffGains ? 'Based on operating profit, because net profit includes large gains on investments.' : 'No past figures available to compare.';
     if (history.length >= 3) {
       const usual = median(history);
       const gap = pe / usual - 1;
       const word = Math.abs(gap) < 0.1 ? 'Close to' : gap > 0 ? 'Above' : 'Below';
-      note = `${word} its usual ${usual.toFixed(1)}.`;
+      note = `${word} its usual ${usual.toFixed(1)}.${oneOffGains ? ' Uses operating profit, because net profit includes large gains on investments.' : ''}`;
     }
     checks.push({ label: 'Price to earnings', value: pe.toFixed(1), note });
   } else if (earnings != null) {
     checks.push({ label: 'Price to earnings', value: 'n/a', note: 'The company made a loss over this period.' });
   }
   if (valuation?.kind === 'dcf') {
-    const fcf = valuation.meta.ttmMargin != null ? valuation.meta.ttmMargin * co.ttm.revenue : null;
+    const fcf = cashAfterCosts(co.ttm);
     if (fcf != null) checks.push({ label: 'Free cash flow yield', value: percent(fcf / marketCap), note: 'Latest yearly cash as a share of the company\'s value.' });
   } else if (valuation?.kind === 'residual' && valuation.fixed.bvps > 0) {
     checks.push({ label: 'Price to book', value: (price / valuation.fixed.bvps).toFixed(2), note: 'Share price compared with book value per share.' });
@@ -482,6 +573,7 @@ export function analyse(co, marketInput = {}) {
     return { type, label, co, market, fairValueAvailable: false, reason: 'Its book value is zero or negative, so this method cannot be used.', checks: senseChecks(co, market, null), warnings };
   }
   companyWarnings(co, market, warnings, type);
+  valuation.fixed.anchors = buildAnchors(valuation, market);
   const range = valueRange(valuation, valuation.assumptions);
   return {
     type,

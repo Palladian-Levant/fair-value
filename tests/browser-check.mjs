@@ -147,6 +147,7 @@ for (const [ticker, pattern, file] of [
 
 await check('the bank shows bank assumptions and a held-return message', async () => {
   assert.ok(await page.isVisible('#slider-roe'));
+  assert.match(await page.textContent('#methods'), /Book value and returns/);
   assert.match(await page.textContent('#implied'), /return on equity/);
 });
 
@@ -206,6 +207,11 @@ await check('the result shows the date of its price', async () => {
   await page.goto(`${site}?t=KO`);
   await page.waitForSelector('#result:not([hidden])');
   assert.match(await page.textContent('#company'), /Price from 5 November/);
+  assert.match(await page.textContent('#methods'), /Cash flow forecast/);
+  assert.match(await page.textContent('#methods'), /usual price to earnings/);
+  const forecast = await page.textContent('#methods div:first-child .figure');
+  await page.locator('#slider-growth').fill('0.15');
+  assert.notEqual(await page.textContent('#methods div:first-child .figure'), forecast);
 });
 
 await check('screener ranks the biggest gap first and links to the full valuation', async () => {
