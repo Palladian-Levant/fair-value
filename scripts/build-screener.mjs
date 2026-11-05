@@ -162,6 +162,7 @@ export function scoreCompanies(companies, { keep = KEEP, notValued = [] } = {}) 
 // rate limited, so each company refreshes these about once a week.
 async function slowData(symbol, finnhub, now, ticker) {
   const quiet = async request => { try { return await request; } catch { return null; } };
+  const list = value => (Array.isArray(value) ? value : []);
   const date = offset => new Date(now.getTime() - offset * 864e5).toISOString().slice(0, 10);
   const recommendations = await quiet(finnhub(`https://finnhub.io/api/v1/stock/recommendation?symbol=${symbol}`));
   const earnings = await quiet(finnhub(`https://finnhub.io/api/v1/stock/earnings?symbol=${symbol}`));
@@ -170,11 +171,11 @@ async function slowData(symbol, finnhub, now, ticker) {
   const news = await quiet(finnhub(`https://finnhub.io/api/v1/company-news?symbol=${symbol}&from=${date(10)}&to=${date(0)}`));
   return {
     updated: date(0),
-    analysts: (recommendations ?? []).slice(0, 4),
-    earnings: (earnings ?? []).slice(0, 4).map(e => ({ period: e.period, actual: e.actual, estimate: e.estimate, surprise: e.surprisePercent })),
-    peers: (peers ?? []).map(p => p.replace('.', '-')).filter(p => p !== ticker).slice(0, 8),
+    analysts: list(recommendations).slice(0, 4),
+    earnings: list(earnings).slice(0, 4).map(e => ({ period: e.period, actual: e.actual, estimate: e.estimate, surprise: e.surprisePercent })),
+    peers: list(peers).map(p => p.replace('.', '-')).filter(p => p !== ticker).slice(0, 8),
     insiders: summariseInsiders(insiders?.data, now),
-    news: (news ?? []).slice(0, 3).map(n => ({ headline: n.headline, source: n.source, url: n.url, time: n.datetime })),
+    news: list(news).slice(0, 3).map(n => ({ headline: n.headline, source: n.source, url: n.url, time: n.datetime })),
   };
 }
 

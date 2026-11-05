@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildScreener, candidateList, isSafeToPublish, pacedClient, parseTreasury } from '../scripts/build-screener.mjs';
+import { buildScreener, candidateList, isSafeToPublish, pacedClient, parseTreasury, summariseInsiders } from '../scripts/build-screener.mjs';
 import { sectorOf, SECTORS } from '../docs/js/sectors.js';
 import { daysOld, filterRows, sortRows } from '../docs/js/screener.js';
 import { COMPANIES, TICKERS } from './fixtures.mjs';
@@ -131,6 +131,32 @@ test('Treasury yields are read from the latest entry', () => {
   const rate = parseTreasury('<d:BC_10YEAR m:type="Edm.Double">4.05</d:BC_10YEAR><d:BC_10YEAR m:type="Edm.Double">4.10</d:BC_10YEAR>');
   assert.ok(Math.abs(rate - 0.041) < 1e-12);
   assert.equal(parseTreasury('<feed></feed>'), null);
+});
+
+test('insider trades are summarised over six months', () => {
+  const today = new Date('2026-11-05T00:00:00Z');
+  const data = [
+    { transactionDate: '2026-09-01', transactionCode: 'S', change: -100, transactionPrice: 50 },
+    { transactionDate: '2026-08-01', transactionCode: 'P', change: 10, transactionPrice: 40 },
+    { transactionDate: '2026-08-01', transactionCode: 'A', change: 500, transactionPrice: 0 },
+    { transactionDate: '2025-01-01', transactionCode: 'S', change: -999, transactionPrice: 50 },
+  ];
+  assert.deepEqual(summariseInsiders(data, today), { buys: 1, sells: 1, bought: 400, sold: 5000 });
+  assert.deepEqual(summariseInsiders(undefined, today), { buys: 0, sells: 0, bought: 0, sold: 0 });
+});
+
+test('slow data is reused between refreshes', async () => {
+  const s = sources();
+  const previous = { KO: { market: { slow: { peers: ['PEP'] } } } };
+  let calls = 0;
+  const counting = async url => { calls += 1; return s.finnhub(url); };
+  const now = new Date('2026-11-05T23:00:00Z');
+  const dayNumber = Math.floor(now.getTime() / 864e5);
+  const tickers = { 0: { cik_str: 21344, ticker: 'KO', title: 'KO' } };
+  const result = await buildScreener({ tickers, ...s, finnhub: counting, now, previous });
+  if (dayNumber % 5 !== 0) assert.deepEqual(result.companies.KO.market.slow.peers, ['PEP']);
+  assert.ok(result.companies.KO.market.stats);
+  assert.ok(calls >= 3);
 });
 
 test('filters and sorting on the screener', () => {
