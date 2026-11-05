@@ -216,6 +216,7 @@ await check('screener ranks the biggest gap first and links to the full valuatio
   assert.match(first, /Exxon/);
   assert.match(await page.textContent('#screen-count'), /7 companies match. 2 lower-confidence results are hidden. 10 could not be valued/);
   assert.equal(await page.isVisible('#search'), false);
+  assert.equal(await page.textContent('#screen-typical'), '');
   await page.waitForTimeout(150);
   await page.screenshot({ path: `${shots}/10-screener.png`, fullPage: true });
   await page.click('#screen-table a:has-text("Coca-Cola")');

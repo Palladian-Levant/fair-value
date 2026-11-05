@@ -68,7 +68,8 @@ export function rowFrom(candidate, analysis, price) {
   const { range, confidence, co, label, warnings } = analysis;
   const gap = range.base / price - 1;
   const flags = [];
-  if (gap > LARGE_GAP) flags.push('Unusually large gap');
+  const suspicious = gap > LARGE_GAP;
+  if (suspicious) flags.push('Unusually large gap');
   if (warnings.some(w => w.includes('out of date'))) flags.push('Old accounts');
   if (warnings.some(w => w.includes('share count'))) flags.push('Share count differed');
   if (co.ttm.netIncome < 0) flags.push('Recent loss');
@@ -76,14 +77,14 @@ export function rowFrom(candidate, analysis, price) {
   return {
     ticker: candidate.ticker,
     name: analysis.market.companyName || co.name,
-    sector: sectorOf(co.sic),
+    sector: sectorOf(co.sic, candidate.ticker),
     label,
     price: round(price),
     fair: round(range.base),
     low: round(range.bear),
     high: round(range.bull),
     gap: Number(gap.toFixed(4)),
-    confidence: confidence.level,
+    confidence: suspicious ? 'Low' : confidence.level,
     score: confidence.score,
     cap: Math.round(price * analysis.market.sharesUsed),
     flags,
@@ -135,12 +136,13 @@ export async function buildScreener({ tickers, sec, finnhub, plain, now = new Da
         peHistory: (metric?.series?.annual?.pe ?? []).slice(0, 10).map(point => point.v),
         companyName: profile?.name,
         finnhubShares: profile?.shareOutstanding > 0 ? profile.shareOutstanding * 1e6 : undefined,
+        marketCap: profile?.marketCapitalization > 0 ? profile.marketCapitalization * 1e6 : undefined,
         riskFree,
         today,
       };
       companies[candidate.ticker] = { co: company, market };
       const analysis = analyse(company, market);
-      const sector = sectorOf(company.sic);
+      const sector = sectorOf(company.sic, candidate.ticker);
       if (!analysis.fairValueAvailable) notValued.push({ sector, reason: analysis.label });
       else if (!(analysis.range.base > 0)) notValued.push({ sector, reason: 'Debts exceed estimated value' });
       else rows.push(rowFrom(candidate, analysis, price));

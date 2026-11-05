@@ -35,6 +35,12 @@ test('sectors match well-known companies', () => {
   ];
   for (const [sic, sector] of cases) assert.equal(sectorOf(sic), sector, String(sic));
   assert.equal(sectorOf(null), 'Other');
+  assert.equal(sectorOf(7389, 'V'), 'Financials');
+  assert.equal(sectorOf(5331, 'WMT'), 'Consumer staples');
+  assert.equal(sectorOf(7370, 'META'), 'Communication');
+  assert.equal(sectorOf(6324), 'Healthcare');
+  assert.equal(sectorOf(3600), 'Industrials');
+  assert.equal(sectorOf(3559), 'Technology');
   assert.ok(SECTORS.at(-1) === 'Other');
 });
 
@@ -84,7 +90,9 @@ test('suspicious results are flagged, not hidden', async () => {
   const s = sources();
   const cheap = async url => (url.includes('/quote') && url.includes('symbol=KO') ? { c: 10 } : s.finnhub(url));
   const result = await buildScreener({ tickers: TICKERS, ...s, finnhub: cheap });
-  assert.ok(result.rows.find(r => r.ticker === 'KO').flags.includes('Unusually large gap'));
+  const ko = result.rows.find(r => r.ticker === 'KO');
+  assert.ok(ko.flags.includes('Unusually large gap'));
+  assert.equal(ko.confidence, 'Low');
   assert.ok(result.rows.find(r => r.ticker === 'F').flags.includes('Recent loss'));
 });
 

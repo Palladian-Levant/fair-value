@@ -5,6 +5,7 @@
 export class UnsupportedFilerError extends Error {}
 
 const MS_PER_DAY = 864e5;
+const ANNUAL_FORM = /^(10-K|20-F|40-F)/;
 const daysBetween = (a, b) => (Date.parse(b) - Date.parse(a)) / MS_PER_DAY;
 
 const TAGS = {
@@ -38,16 +39,27 @@ function bestPerPeriod(entries, keyOf) {
 // first; older labels only fill gaps. Revenue uses the largest value for a
 // period because a part of revenue can never exceed the total.
 function mergedFlows(gaap, tags, mode = 'first') {
-  const perTag = tags
-    .map(tag => bestPerPeriod((gaap[tag]?.units?.USD ?? []).filter(e => e.start), e => `${e.start}|${e.end}`))
-    .filter(map => map.size);
+  const periodKey = e => `${e.start}|${e.end}`;
+  const perTag = tags.map(tag => {
+    const entries = (gaap[tag]?.units?.USD ?? []).filter(e => e.start);
+    const best = bestPerPeriod(entries, periodKey);
+    // Later quarterly filings can repeat a full-year figure, so remember
+    // that the period also appeared in an annual report.
+    for (const e of entries) {
+      const held = best.get(periodKey(e));
+      if (held && ANNUAL_FORM.test(e.form ?? '')) best.set(periodKey(e), { ...held, annual: true });
+    }
+    return best;
+  }).filter(map => map.size);
   const newest = map => [...map.values()].reduce((max, e) => (e.end > max ? e.end : max), '');
   perTag.sort((a, b) => newest(b).localeCompare(newest(a)));
   const merged = new Map();
   for (const map of perTag) {
     for (const [key, e] of map) {
       const held = merged.get(key);
-      if (!held || (mode === 'max' && e.val > held.val)) merged.set(key, e);
+      const annual = Boolean(held?.annual || e.annual);
+      if (!held || (mode === 'max' && e.val > held.val)) merged.set(key, { ...e, annual });
+      else if (annual && !held.annual) merged.set(key, { ...held, annual });
     }
   }
   return [...merged.values()];
@@ -56,7 +68,7 @@ function mergedFlows(gaap, tags, mode = 'first') {
 function annualOf(entries) {
   const yearly = entries.filter(e => {
     const length = daysBetween(e.start, e.end);
-    return length >= 330 && length <= 385 && /^(10-K|20-F|40-F)/.test(e.form ?? '');
+    return length >= 330 && length <= 385 && e.annual;
   });
   return bestPerPeriod(yearly, e => e.end);
 }
@@ -124,7 +136,7 @@ function balanceSheet(gaap) {
   return {
     asOf,
     cash: at('CashAndCashEquivalentsAtCarryingValue', 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents'),
-    shortTermInvestments: n(at('ShortTermInvestments', 'MarketableSecuritiesCurrent', 'AvailableForSaleSecuritiesDebtSecuritiesCurrent')),
+    shortTermInvestments: n(at('ShortTermInvestments', 'MarketableSecuritiesCurrent', 'AvailableForSaleSecuritiesDebtSecuritiesCurrent', 'AvailableForSaleSecuritiesDebtSecurities', 'MarketableSecurities')),
     longTermInvestments: Math.max(n(at('LongTermInvestments')), longTermPieces),
     debt: debtKnown ? Math.max(...candidates) : null,
     equity: equity.has(asOf) ? equity.get(asOf) : null,

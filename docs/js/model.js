@@ -85,7 +85,8 @@ function classify(co, tax) {
   if (median(margins) <= 0 || (ttmFcf <= 0 && lastFcf <= 0 && ttm.netIncome <= 0)) return 'lossMaking';
   if (cyclicalIndustry(sic)) return 'cyclical';
   const g = growthRates(co);
-  if (Math.max(g.short ?? 0, g.long ?? 0) >= 0.15) return 'growth';
+  // A fast rebound after negative cash flow is a cycle, not steady growth.
+  if (Math.max(g.short ?? 0, g.long ?? 0) >= 0.15 && Math.min(...margins) > 0) return 'growth';
   const swing = margins.length >= 3 ? stdev(margins) / Math.abs(mean(margins)) : 0;
   const lossYears = rows.filter(r => r.netIncome < 0).length;
   if (swing > 0.6 || lossYears >= 2) return 'cyclical';
@@ -339,7 +340,14 @@ export function impliedByPrice(valuation, a, price) {
   return { key, value, averageGrowth: valuation.kind === 'dcf' ? runBase(valuation, applied(value)).averageGrowth : null };
 }
 
-function confidence(co, type, valuation, range) {
+function capexJumped(co) {
+  const rows = co.annual.filter(r => r.capex != null && r.revenue > 0);
+  if (rows.length < 3 || !co.ttm.revenue || co.ttm.capex == null) return false;
+  const usual = median(rows.slice(0, -1).map(r => r.capex / r.revenue));
+  return usual > 0 && co.ttm.capex / co.ttm.revenue > usual * 1.5;
+}
+
+function confidence(co, type, valuation, range, price) {
   let score = 100;
   const reasons = [];
   const dock = (points, reason) => { score -= points; reasons.push(reason); };
@@ -356,6 +364,8 @@ function confidence(co, type, valuation, range) {
     if (valuation.meta.captive || valuation.meta.carMaker) dock(15, 'A finance arm makes the debt harder to judge.');
     if (co.balance.debt == null) dock(15, 'Debt could not be found in the filings.');
   }
+  if (price && range.base > 0 && Math.abs(range.base / price - 1) > 0.5) dock(15, 'The value is far from the share price, so the model may be missing something.');
+  if (valuation.kind === 'dcf' && capexJumped(co)) dock(10, 'Investment spending has jumped, which holds down recent cash flow.');
   if (!valuation.meta.cost.betaKnown) dock(5, 'Share risk data was missing, so a market-average figure was used.');
   if (range.base > 0 && (range.bull - range.bear) / range.base > 1) dock(10, 'The range between low and high is very wide.');
   const level = score >= 70 ? 'High' : score >= 45 ? 'Medium' : 'Low';
@@ -415,7 +425,7 @@ function companyWarnings(co, market, warnings, type) {
 // Builds everything the page needs for one company.
 export function analyse(co, marketInput = {}) {
   const market = { ...marketInput };
-  const finnhubShares = market.finnhubShares;
+  const finnhubShares = market.marketCap > 0 && market.price > 0 ? market.marketCap / market.price : market.finnhubShares;
   const secShares = co.shares?.val;
   if (finnhubShares > 0 && (!secShares || Math.abs(finnhubShares / secShares - 1) > 0.1)) {
     market.shareMismatch = Boolean(secShares);
@@ -451,7 +461,7 @@ export function analyse(co, marketInput = {}) {
     valuation,
     fairValueAvailable: true,
     range,
-    confidence: confidence(co, type, valuation, range),
+    confidence: confidence(co, type, valuation, range, market.price),
     checks: senseChecks(co, market, valuation),
     warnings,
   };

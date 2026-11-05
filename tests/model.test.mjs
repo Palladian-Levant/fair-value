@@ -157,6 +157,53 @@ test('blank fields do not break a thinly reported company', () => {
   assert.ok(result.confidence.reasons.some(r => r.includes('Debt')));
 });
 
+test('a full-year figure repeated in a later quarterly filing is kept', () => {
+  const facts = structuredClone(COMPANIES.JPM.facts);
+  const entries = facts.facts['us-gaap'].NetIncomeLoss.units.USD;
+  const last = entries.find(e => e.end === '2025-12-31');
+  entries.push({ ...last, form: '10-Q', filed: '2026-05-01' });
+  const co = extractCompany(facts, { sic: 6021 });
+  near(co.annual.at(-1).netIncome, 57050e6);
+});
+
+test('a share class mismatch uses the market value', () => {
+  const c = COMPANIES.JPM;
+  const co = extractCompany(c.facts, { sic: c.sic });
+  co.shares = { val: 1.5e6, source: 'test' };
+  const result = analyse(co, { price: 320, marketCap: 320 * 2656e6, finnhubShares: 2e6, beta: 1, riskFree: 0.041, today: '2026-11-05' });
+  near(result.valuation.fixed.bvps, (372368e6 - 21040e6) / 2656e6, 1e-6);
+  assert.ok(result.range.base < 1000);
+});
+
+test('a rebound after negative cash flow is not treated as lasting growth', () => {
+  const facts = buildFacts({
+    name: 'MEMORY CO', cik: 8, shares: 1000,
+    years: [
+      { end: '2022-12-31', revenue: 30000, netIncome: 8000, ocf: 15000, capex: 12000 },
+      { end: '2023-12-31', revenue: 15000, netIncome: -6000, ocf: 1000, capex: 7000 },
+      { end: '2024-12-31', revenue: 25000, netIncome: 800, ocf: 8000, capex: 8000 },
+      { end: '2025-12-31', revenue: 60000, netIncome: 20000, ocf: 30000, capex: 13000 },
+    ],
+    balance: { asOf: '2025-12-31', items: { Assets: 90000, StockholdersEquity: 60000, CashAndCashEquivalentsAtCarryingValue: 10000, LongTermDebtNoncurrent: 12000 } },
+  });
+  const result = analyse(extractCompany(facts, { sic: 3674 }), { price: 100, beta: 1.2, riskFree: 0.045, today: '2026-11-05' });
+  assert.equal(result.type, 'cyclical');
+  assert.ok(result.valuation.assumptions.growth <= 0.04);
+});
+
+test('a value far from the price and a capex jump both lower confidence', () => {
+  const c = COMPANIES.KO;
+  const co = extractCompany(c.facts, { sic: c.sic });
+  const market = { beta: c.beta, riskFree: 0.041, today: '2026-11-05' };
+  const near_ = analyse(co, { ...market, price: 60 });
+  const far = analyse(co, { ...market, price: 200 });
+  assert.ok(far.confidence.reasons.some(r => r.includes('far from the share price')));
+  assert.ok(far.confidence.score < near_.confidence.score);
+  const spending = structuredClone(co);
+  spending.ttm.capex = co.ttm.revenue * 0.3;
+  assert.ok(analyse(spending, { ...market, price: 60 }).confidence.reasons.some(r => r.includes('Investment spending')));
+});
+
 test('printed defaults for a review', () => {
   for (const key of ['KO', 'NVDA', 'F', 'JPM']) {
     const r = run(key);
