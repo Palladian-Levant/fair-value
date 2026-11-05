@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extractCompany, mergeFacts, UnsupportedFilerError } from '../docs/js/extract.js';
-import { addSectorMultiples, analyse } from '../docs/js/model.js';
+import { addScores, addSectorMultiples, analyse } from '../docs/js/model.js';
 import { sectorOf } from '../docs/js/sectors.js';
 
 const SEC_GAP_MS = 150;
@@ -103,6 +103,12 @@ export function candidateList(tickers, limit = CANDIDATES) {
   return list;
 }
 
+function buyShare(latest) {
+  if (!latest) return null;
+  const total = latest.strongBuy + latest.buy + latest.hold + latest.sell + latest.strongSell;
+  return total ? Number(((latest.strongBuy + latest.buy) / total).toFixed(3)) : null;
+}
+
 export function rowFrom(candidate, analysis, price) {
   const { range, confidence, co, label, warnings } = analysis;
   const gap = range.base / price - 1;
@@ -124,9 +130,13 @@ export function rowFrom(candidate, analysis, price) {
     high: round(range.bull),
     gap: Number(gap.toFixed(4)),
     confidence: suspicious ? 'Low' : confidence.level,
-    score: confidence.score,
+    confidenceScore: confidence.score,
     cap: Math.round(price * analysis.market.sharesUsed),
     flags,
+    forwardPE: analysis.market.stats?.forwardPE ?? null,
+    dividendYield: analysis.market.stats?.dividendYieldIndicatedAnnual ?? 0,
+    buyShare: buyShare(analysis.market.slow?.analysts?.[0]),
+    score: analysis.market.scores?.overall ?? null,
   };
 }
 
@@ -143,6 +153,12 @@ async function latestRiskFree(request, now) {
 // Values every saved company. Sector multiples need the whole list first.
 export function scoreCompanies(companies, { keep = KEEP, notValued = [] } = {}) {
   addSectorMultiples(companies);
+  const gaps = {};
+  for (const [ticker, entry] of Object.entries(companies)) {
+    const analysis = analyse(entry.co, entry.market);
+    if (analysis.fairValueAvailable && analysis.range.base > 0) gaps[ticker] = analysis.range.base / entry.market.price - 1;
+  }
+  addScores(companies, gaps);
   const rows = [];
   const missing = [...notValued];
   for (const [ticker, entry] of Object.entries(companies)) {

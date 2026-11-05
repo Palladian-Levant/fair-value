@@ -161,14 +161,18 @@ test('slow data is reused between refreshes', async () => {
 
 test('filters and sorting on the screener', () => {
   const rows = [
-    { ticker: 'A', sector: 'Energy', confidence: 'High', score: 80, gap: 0.2, cap: 5e9, price: 1, fair: 1 },
-    { ticker: 'B', sector: 'Energy', confidence: 'Medium', score: 60, gap: 0.6, cap: 50e9, price: 2, fair: 3 },
-    { ticker: 'C', sector: 'Energy', confidence: 'Low', score: 20, gap: 2, cap: 60e9, price: 1, fair: 3 },
-    { ticker: 'D', sector: 'Technology', confidence: 'High', score: 90, gap: -0.2, cap: 900e9, price: 9, fair: 7 },
+    { ticker: 'A', sector: 'Energy', confidence: 'High', confidenceScore: 80, gap: 0.2, cap: 5e9, price: 1, fair: 1 },
+    { ticker: 'B', sector: 'Energy', confidence: 'Medium', confidenceScore: 60, gap: 0.6, cap: 50e9, price: 2, fair: 3 },
+    { ticker: 'C', sector: 'Energy', confidence: 'Low', confidenceScore: 20, gap: 2, cap: 60e9, price: 1, fair: 3 },
+    { ticker: 'D', sector: 'Technology', confidence: 'High', confidenceScore: 90, gap: -0.2, cap: 900e9, price: 9, fair: 7 },
   ];
   assert.deepEqual(filterRows(rows, { sector: 'Energy' }).map(r => r.ticker), ['A', 'B']);
   assert.deepEqual(filterRows(rows, { sector: 'Energy', minConfidence: 'Low' }).map(r => r.ticker), ['A', 'B', 'C']);
   assert.deepEqual(filterRows(rows, { minConfidence: 'High', minCap: 10e9 }).map(r => r.ticker), ['D']);
+  const scored = rows.map((r, i) => ({ ...r, score: i + 1, buyShare: i * 0.3, dividendYield: i }));
+  assert.deepEqual(filterRows(scored, { minConfidence: 'Low', minScore: 3 }).map(r => r.ticker), ['C', 'D']);
+  assert.deepEqual(filterRows(scored, { minConfidence: 'Low', minBuy: 0.5 }).map(r => r.ticker), ['C', 'D']);
+  assert.deepEqual(filterRows(scored, { minConfidence: 'Low', minYield: 3 }).map(r => r.ticker), ['D']);
   assert.deepEqual(sortRows(rows).map(r => r.ticker), ['C', 'B', 'A', 'D']);
   assert.deepEqual(sortRows(rows, 'confidence').map(r => r.ticker), ['D', 'A', 'B', 'C']);
   assert.deepEqual(sortRows(rows, 'gap', 'asc').map(r => r.ticker), ['D', 'A', 'B', 'C']);

@@ -312,6 +312,45 @@ li + li { margin-top: 0.25rem; }
 #methods .figure { display: block; font-family: "Bricolage Grotesque", system-ui, sans-serif; font-size: 1.75rem; font-weight: 650; line-height: 1.2; }
 #methods .note { color: var(--ink-soft); font-size: 0.9375rem; }
 
+.section-note, #methods-note { margin: 0.4rem 0 0; color: var(--ink-soft); max-width: 42rem; }
+
+.score { display: grid; grid-template-columns: 11rem 1fr 4rem; gap: 0.75rem; align-items: center; margin-top: 0.7rem; }
+.score.overall { font-weight: 700; }
+.score-track { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.score-fill { display: block; height: 100%; border-radius: 4px; background: var(--band); }
+.score-value { text-align: right; font-variant-numeric: tabular-nums; }
+
+#stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1.75rem 2.5rem; margin-top: 1rem; }
+.stat-group { margin-top: 0; }
+.stat-group h4 { margin: 0 0 0.4rem; font: 650 1.0625rem "Bricolage Grotesque", system-ui, sans-serif; }
+.stat-group dl { margin: 0; }
+.stat-group dl div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
+.stat-group dt { color: var(--ink-soft); }
+.stat-group dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+
+#charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1.5rem 2rem; margin-top: 1rem; }
+.chart { margin: 0; }
+.chart figcaption { font-weight: 700; }
+.chart svg { display: block; width: 100%; height: auto; }
+.chart .bar { fill: var(--band); }
+.chart .bar.negative { fill: var(--warn); }
+.chart text { fill: var(--ink-soft); font-size: 11px; text-anchor: middle; }
+.chart text.value { fill: var(--ink); font-weight: 700; }
+
+#analyst-summary { margin: 0.6rem 0 0; max-width: 42rem; }
+#analyst-bar { display: flex; gap: 2px; height: 12px; margin-top: 0.75rem; max-width: 30rem; }
+#analyst-bar span { min-width: 2px; border-radius: 3px; flex-basis: 0; }
+#analyst-bar .buy { background: var(--band); }
+#analyst-bar .hold { background: var(--line); }
+#analyst-bar .sell { background: var(--warn); }
+#analysts-section .table-wrap, #peers-section .table-wrap { margin-top: 1rem; }
+#peers-table a { color: var(--ink); font-weight: 700; }
+#insiders { margin: 0.6rem 0 0; max-width: 42rem; }
+#news { margin: 0.75rem 0 0; padding: 0; list-style: none; max-width: 42rem; }
+#news li { margin-top: 0.75rem; }
+#news a { color: var(--ink); font-weight: 700; text-underline-offset: 3px; }
+#news .note { display: block; color: var(--ink-soft); font-size: 0.9375rem; }
+
 #numbers { margin-top: 3rem; }
 #numbers summary { cursor: pointer; font-family: "Bricolage Grotesque", system-ui, sans-serif; font-size: 1.25rem; font-weight: 600; min-height: 44px; display: list-item; }
 .table-wrap { overflow-x: auto; margin-top: 0.75rem; }

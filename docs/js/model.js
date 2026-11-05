@@ -124,17 +124,31 @@ function capitalCost(co, market, tax) {
   return { riskFree, riskFreeLive: market.riskFree != null, beta, betaKnown, equityCost, tax };
 }
 
-function defaultGrowth(g, type) {
-  const limits = { steady: [0.01, 0.1], growth: [0.05, 0.25], cyclical: [0, 0.04] }[type];
+// Forward P/E divided by forward PEG gives the growth analysts expect.
+function analystView(market) {
+  const { forwardPE, forwardPEG } = market.stats ?? {};
+  const eps = forwardPE > 0 && market.price > 0 ? market.price / forwardPE : null;
+  const growth = forwardPE > 0 && forwardPEG > 0 ? forwardPE / forwardPEG / 100 : null;
+  return { eps, growth: growth > 0.005 && growth < 1 ? growth : null };
+}
+
+function defaultGrowth(g, type, analystGrowth) {
+  const limits = { steady: [0.01, 0.12], growth: [0.05, 0.35], cyclical: [0, 0.05] }[type];
   let raw = g.long != null && g.short != null ? (g.long + g.short) / 2 : g.short ?? g.long ?? 0.03;
   const slowing = g.recent != null && g.recent < raw - 0.03;
   if (slowing) raw = (raw + g.recent) / 2;
-  const value = clamp(raw, limits[0], limits[1]);
   const history = g.long != null ? `Revenue grew about ${percent(g.long, 0)} a year over the last five years` : 'There is little revenue history';
   let reason = history;
-  if (type === 'cyclical') reason += '. Cyclical companies get a low long-run rate, so one good stretch is not projected forward';
-  else if (slowing) reason += `, and growth has slowed to ${percent(g.recent, 0)} recently`;
-  if (value !== raw && type !== 'cyclical') reason += `. Capped at ${percent(limits[raw > limits[1] ? 1 : 0], 0)} for this type of company`;
+  if (type === 'cyclical') {
+    reason += '. Cyclical companies get a low long-run rate, so one good stretch is not projected forward';
+  } else if (analystGrowth != null) {
+    raw = (raw + analystGrowth) / 2;
+    reason += `, and analysts expect about ${percent(analystGrowth, 0)}. This uses the middle of the two`;
+  } else if (slowing) {
+    reason += `, and growth has slowed to ${percent(g.recent, 0)} recently`;
+  }
+  const value = clamp(raw, limits[0], limits[1]);
+  if (value !== raw && type !== 'cyclical') reason += `. Held at ${percent(value, 0)} for this type of company`;
   return { value, reason: `${reason}.` };
 }
 
@@ -179,7 +193,7 @@ function buildDcf(co, market, type, warnings) {
   const ttmMargin = operatingMargin(ttm, tax);
 
   const cost = capitalCost(co, market, tax);
-  const growth = defaultGrowth(g, type);
+  const growth = defaultGrowth(g, type, analystView(market).growth);
   const margin = defaultMargin(rows, ttmMargin, type);
 
   const debt = balance.debt ?? 0;
@@ -335,58 +349,105 @@ export function residualIncome(a, fixed) {
   return { perShare: total, terminalShare: Math.abs(terminalValue) / Math.abs(total) };
 }
 
-// Fair value blends the cash flow model with what investors usually pay for
-// these earnings, so a forecast from past results is not the only opinion.
-const ANCHOR_WEIGHT = 0.25;
+// Fair value combines a forecast of the business with what investors pay for
+// similar earnings, cash profit and sales. The market models are averaged after
+// dropping the highest and lowest, so one odd reading cannot dominate.
+export const FORECAST_WEIGHT = 0.35;
 
-function blended(modelValue, anchors = [], factor = 1) {
-  const anchorTotal = anchors.reduce((sum, anchor) => sum + ANCHOR_WEIGHT * anchor.value * factor, 0);
-  return (1 - ANCHOR_WEIGHT * anchors.length) * modelValue + anchorTotal;
+function quantile(sorted, q) {
+  const position = (sorted.length - 1) * q;
+  const low = Math.floor(position);
+  const high = Math.ceil(position);
+  return sorted[low] + (sorted[high] - sorted[low]) * (position - low);
 }
 
-function earningsPerShare(valuation) {
+function combine(forecast, marketModels = []) {
+  const values = marketModels.map(model => model.value).filter(value => value > 0).sort((a, b) => a - b);
+  const kept = values.length >= 5 ? values.slice(1, -1) : values;
+  const base = kept.length ? FORECAST_WEIGHT * forecast + (1 - FORECAST_WEIGHT) * mean(kept) : forecast;
+  const all = [forecast, ...values].sort((a, b) => a - b);
+  const spread = Math.abs(base);
+  const bear = all.length >= 3 ? Math.min(quantile(all, 0.25), base - spread * 0.1) : base - spread * 0.15;
+  const bull = all.length >= 3 ? Math.max(quantile(all, 0.75), base + spread * 0.1) : base + spread * 0.15;
+  return { base, bear, bull };
+}
+
+function normalEarnings(valuation) {
   const { fixed, assumptions: a } = valuation;
   if (valuation.kind === 'dcf') return (fixed.revenue * a.margin * (1 - fixed.tax)) / fixed.shares;
   return a.roe * fixed.bvps;
 }
 
-function buildAnchors(valuation, market) {
-  const eps = earningsPerShare(valuation);
-  if (!(eps > 0)) return [];
-  const anchors = [];
-  const history = (market.peHistory ?? []).filter(v => v > 5 && v < 100);
-  if (history.length >= 3) {
-    const multiple = clamp(median(history), 8, 45);
-    anchors.push({ key: 'history', label: 'Its usual price to earnings', detail: `${multiple.toFixed(1)} times normal earnings`, value: eps * multiple });
-  }
-  if (market.sectorPe > 0) {
-    const multiple = clamp(market.sectorPe, 8, 45);
-    anchors.push({ key: 'sector', label: 'Sector price to earnings', detail: `${multiple.toFixed(1)} times normal earnings`, value: eps * multiple });
-  }
-  return anchors;
+function usualMultiple(points, low, high) {
+  const values = (points ?? []).slice(0, 6).map(point => (Array.isArray(point) ? point[1] : point)).filter(v => v > 0 && v < 200);
+  return values.length >= 3 ? clamp(median(values), low, high) : null;
 }
 
-// The typical price to earnings in each sector, using operating profit so that
-// one-off gains do not distort it. Saved with each company by the nightly update.
+function buildMarketModels(valuation, market, type) {
+  const { fixed } = valuation;
+  const { stats = {}, series = {} } = market;
+  const models = [];
+  const add = (key, label, multiple, unit, value) => {
+    if (multiple > 0 && value > 0) models.push({ key, label, detail: `${multiple.toFixed(1)} times ${unit}`, value });
+  };
+  const normal = normalEarnings(valuation);
+  const expected = analystView(market).eps;
+  // Cyclical peaks flatter forward earnings, so those use normal earnings only.
+  const earnings = type !== 'cyclical' && expected > 0 ? mean([normal, expected].filter(v => v > 0)) : normal;
+  const earningsUnit = type !== 'cyclical' && expected > 0 ? 'normal and expected earnings' : 'normal earnings';
+  if (earnings > 0) {
+    add('historyPe', 'Its usual P/E', usualMultiple(series.pe ?? market.peHistory, 8, 45), earningsUnit, earnings * usualMultiple(series.pe ?? market.peHistory, 8, 45));
+    const sector = market.sector?.pe ? clamp(market.sector.pe, 8, 45) : null;
+    add('sectorPe', 'Sector P/E', sector, earningsUnit, earnings * sector);
+  }
+  if (valuation.kind === 'dcf') {
+    const enterprise = stats.enterpriseValue * 1e6;
+    const ebitda = stats.evEbitdaTTM > 0 && enterprise > 0 ? enterprise / stats.evEbitdaTTM : null;
+    const fromEnterprise = multiple => (multiple * ebitda - fixed.netClaims) / fixed.shares;
+    if (ebitda > 0) {
+      const usual = usualMultiple(series.evEbitda, 4, 35);
+      if (usual) add('historyEv', 'Its usual EV/EBITDA', usual, 'cash profit', fromEnterprise(usual));
+      const sector = market.sector?.evEbitda ? clamp(market.sector.evEbitda, 4, 35) : null;
+      if (sector) add('sectorEv', 'Sector EV/EBITDA', sector, 'cash profit', fromEnterprise(sector));
+    }
+    const usualSales = usualMultiple(series.ps, 0.2, 25);
+    if (usualSales) add('historyPs', 'Its usual P/S', usualSales, 'sales', (usualSales * fixed.revenue) / fixed.shares);
+  } else if (fixed.bvps > 0) {
+    const usual = usualMultiple(series.pb, 0.3, 8);
+    if (usual) add('historyPb', 'Its usual P/B', usual, 'book value', usual * fixed.bvps);
+    const sector = market.sector?.pb ? clamp(market.sector.pb, 0.3, 8) : null;
+    if (sector) add('sectorPb', 'Sector P/B', sector, 'book value', sector * fixed.bvps);
+  }
+  return models;
+}
+
+// Typical multiples in each sector, saved with each company by the nightly
+// update. Profit is operating profit, so one-off gains do not distort it.
 export function addSectorMultiples(companies) {
-  const bySector = {};
-  const all = [];
+  const groups = {};
+  const everyone = { pe: [], evEbitda: [], pb: [] };
+  const push = (sector, key, value, limit) => {
+    if (!(value > 0) || value > limit) return;
+    ((groups[sector] ??= { pe: [], evEbitda: [], pb: [] })[key]).push(value);
+    everyone[key].push(value);
+  };
   for (const [ticker, entry] of Object.entries(companies)) {
     const tax = taxRate(entry.co.annual);
     const value = entry.market.marketCap ?? entry.market.price * (entry.co.shares?.val ?? 0);
-    const profit = entry.co.sic >= 6000 && entry.co.sic <= 6411 && entry.co.sic !== 6324
-      ? entry.co.ttm.netIncome
-      : (operatingProfit(entry.co.ttm, tax) ?? 0) * (1 - tax);
-    if (!(value > 0) || !(profit > 0)) continue;
-    const multiple = value / profit;
-    if (multiple > 80) continue;
-    (bySector[sectorOf(entry.co.sic, ticker)] ??= []).push(multiple);
-    all.push(multiple);
+    const isBank = entry.co.sic >= 6000 && entry.co.sic <= 6411 && entry.co.sic !== 6324;
+    const profit = isBank ? entry.co.ttm.netIncome : (operatingProfit(entry.co.ttm, tax) ?? 0) * (1 - tax);
+    const sector = sectorOf(entry.co.sic, ticker);
+    if (value > 0 && profit > 0) push(sector, 'pe', value / profit, 80);
+    push(sector, 'evEbitda', entry.market.stats?.evEbitdaTTM, 60);
+    if (isBank) push(sector, 'pb', entry.market.stats?.pb, 12);
   }
   for (const [ticker, entry] of Object.entries(companies)) {
-    const peers = bySector[sectorOf(entry.co.sic, ticker)] ?? [];
-    const group = peers.length >= 5 ? peers : all;
-    entry.market.sectorPe = group.length ? median(group) : undefined;
+    const peers = groups[sectorOf(entry.co.sic, ticker)] ?? {};
+    const pick = key => {
+      const list = (peers[key]?.length ?? 0) >= 5 ? peers[key] : everyone[key];
+      return list.length ? median(list) : undefined;
+    };
+    entry.market.sector = { pe: pick('pe'), evEbitda: pick('evEbitda'), pb: pick('pb') };
   }
   return companies;
 }
@@ -398,32 +459,8 @@ function runBase(valuation, a) {
 export function valueRange(valuation, a) {
   const { fixed } = valuation;
   const base = runBase(valuation, a);
-  if (valuation.kind === 'dcf') {
-    const shift = (sign) => discountedCashFlow({
-      ...a,
-      growth: a.growth + sign * fixed.spreadG,
-      margin: a.margin * (1 + sign * fixed.spreadM),
-    }, fixed).perShare;
-    return {
-      bear: blended(shift(-1), fixed.anchors, 0.85),
-      base: blended(base.perShare, fixed.anchors),
-      bull: blended(shift(1), fixed.anchors, 1.15),
-      model: base.perShare,
-      terminalShare: base.terminalShare,
-    };
-  }
-  const shift = sign => residualIncome({
-    ...a,
-    roe: a.roe + sign * fixed.spreadR,
-    roeLong: a.roeLong + sign * fixed.spreadLong,
-  }, fixed).perShare;
-  return {
-    bear: blended(shift(-1), fixed.anchors, 0.85),
-    base: blended(base.perShare, fixed.anchors),
-    bull: blended(shift(1), fixed.anchors, 1.15),
-    model: base.perShare,
-    terminalShare: base.terminalShare,
-  };
+  const combined = combine(base.perShare, fixed.marketModels);
+  return { ...combined, model: base.perShare, terminalShare: base.terminalShare };
 }
 
 // Works out what the current share price assumes, by searching for the
@@ -472,12 +509,11 @@ function confidence(co, type, valuation, range, price) {
     if (co.balance.debt == null) dock(15, 'Debt could not be found in the filings.');
   }
   const farFromPrice = price && range.base > 0 && Math.abs(range.base / price - 1) > 0.5;
-  const estimates = [range.model, ...(valuation.fixed.anchors ?? []).map(anchor => anchor.value)].filter(v => v > 0);
-  if (estimates.length >= 2 && Math.max(...estimates) > 2.5 * Math.min(...estimates)) dock(10, 'The valuation methods disagree widely.');
+  if (range.base > 0 && (range.bull - range.bear) / range.base > 0.6) dock(10, 'The valuation models disagree widely.');
+  if ((valuation.fixed.marketModels?.length ?? 0) < 3) dock(10, 'Few valuation models could be used for this company.');
   if (farFromPrice) dock(15, 'The value is far from the share price, so the model may be missing something.');
   if (valuation.kind === 'dcf' && capexJumped(co)) dock(10, 'Investment spending has jumped. The value assumes it earns a good return.');
   if (!valuation.meta.cost.betaKnown) dock(5, 'Share risk data was missing, so a market-average figure was used.');
-  if (range.base > 0 && (range.bull - range.bear) / range.base > 1) dock(10, 'The range between low and high is very wide.');
   if (farFromPrice) score = Math.min(score, 69);
   const level = score >= 70 ? 'High' : score >= 45 ? 'Medium' : 'Low';
   if (!reasons.length) reasons.push('Consistent results and a good fit for this method.');
@@ -552,6 +588,43 @@ function chooseShares(sec, market, impliedByValue) {
   return sec;
 }
 
+const SCORE_PARTS = {
+  growth: [s => s.revenueGrowth3Y, s => s.revenueGrowthTTMYoy, s => s.epsGrowth3Y],
+  profitability: [s => s.operatingMarginTTM, s => s.roiTTM, s => s.netProfitMarginTTM],
+  strength: [s => (s['totalDebt/totalEquityQuarterly'] == null ? null : -s['totalDebt/totalEquityQuarterly']), s => s.currentRatioQuarterly, s => s.netInterestCoverageTTM],
+  momentum: [s => s['26WeekPriceReturnDaily'], s => s['52WeekPriceReturnDaily'], s => s['priceRelativeToS&P50052Week']],
+};
+
+// Scores run from 1 to 5 and show where a company ranks against all the others.
+export function addScores(companies, gaps = {}) {
+  const tickers = Object.keys(companies);
+  const rankings = (read) => {
+    const known = tickers.map(ticker => [ticker, read(ticker)]).filter(([, value]) => typeof value === 'number' && Number.isFinite(value)).sort((a, b) => a[1] - b[1]);
+    return new Map(known.map(([ticker], index) => [ticker, known.length > 1 ? index / (known.length - 1) : 0.5]));
+  };
+  const toScore = rank => Number((1 + 4 * rank).toFixed(1));
+  const groups = {};
+  for (const [name, parts] of Object.entries(SCORE_PARTS)) {
+    groups[name] = parts.map(part => rankings((ticker) => {
+      const isBank = companies[ticker].co.sic >= 6000 && companies[ticker].co.sic <= 6411;
+      if (name === 'strength' && isBank) return null;
+      return part(companies[ticker].market.stats ?? {});
+    }));
+  }
+  const value = rankings(ticker => gaps[ticker]);
+  for (const ticker of tickers) {
+    const scores = { value: value.has(ticker) ? toScore(value.get(ticker)) : null };
+    for (const [name, maps] of Object.entries(groups)) {
+      const ranks = maps.filter(map => map.has(ticker)).map(map => map.get(ticker));
+      scores[name] = ranks.length ? toScore(mean(ranks)) : null;
+    }
+    const present = Object.values(scores).filter(v => v != null);
+    scores.overall = present.length >= 3 ? Number(mean(present).toFixed(1)) : null;
+    companies[ticker].market.scores = scores;
+  }
+  return companies;
+}
+
 // Builds everything the page needs for one company.
 export function analyse(co, marketInput = {}) {
   const market = { ...marketInput };
@@ -583,8 +656,10 @@ export function analyse(co, marketInput = {}) {
     return { type, label, co, market, fairValueAvailable: false, reason: 'Its book value is zero or negative, so this method cannot be used.', checks: senseChecks(co, market, null), warnings };
   }
   companyWarnings(co, market, warnings, type);
-  valuation.fixed.anchors = buildAnchors(valuation, market);
+  valuation.fixed.marketModels = buildMarketModels(valuation, market, type);
   const range = valueRange(valuation, valuation.assumptions);
+  const checks = senseChecks(co, market, valuation);
+  if (checks.some(check => check.note.includes('gains on investments'))) warnings.push('Recent net profit includes large gains on investments, so operating profit is used instead.');
   return {
     type,
     label,
@@ -594,7 +669,7 @@ export function analyse(co, marketInput = {}) {
     fairValueAvailable: true,
     range,
     confidence: confidence(co, type, valuation, range, market.price),
-    checks: senseChecks(co, market, valuation),
+    checks,
     warnings,
   };
 }

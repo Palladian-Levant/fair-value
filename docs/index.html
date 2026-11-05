@@ -50,7 +50,46 @@
 
       <section id="methods-section" aria-labelledby="methods-title">
         <h3 id="methods-title">How this value is built</h3>
+        <p id="methods-note"></p>
         <dl id="methods"></dl>
+      </section>
+
+      <section id="scores-section" aria-labelledby="scores-title" hidden>
+        <h3 id="scores-title">Company scores</h3>
+        <p class="section-note">Ranked against the other large US companies here, from 1 to 5.</p>
+        <div id="scores"></div>
+      </section>
+
+      <section id="stats-section" aria-labelledby="stats-title" hidden>
+        <h3 id="stats-title">Key figures</h3>
+        <div id="stats"></div>
+      </section>
+
+      <section id="charts-section" aria-labelledby="charts-title" hidden>
+        <h3 id="charts-title">Long-term record</h3>
+        <div id="charts"></div>
+      </section>
+
+      <section id="analysts-section" aria-labelledby="analysts-title" hidden>
+        <h3 id="analysts-title">Analysts and earnings</h3>
+        <p id="analyst-summary"></p>
+        <div id="analyst-bar" aria-hidden="true"></div>
+        <div class="table-wrap"><table id="earnings-table"></table></div>
+      </section>
+
+      <section id="peers-section" aria-labelledby="peers-title" hidden>
+        <h3 id="peers-title">Similar companies</h3>
+        <div class="table-wrap"><table id="peers-table"></table></div>
+      </section>
+
+      <section id="insiders-section" aria-labelledby="insiders-title" hidden>
+        <h3 id="insiders-title">Insider trades</h3>
+        <p id="insiders"></p>
+      </section>
+
+      <section id="news-section" aria-labelledby="news-title" hidden>
+        <h3 id="news-title">Recent news</h3>
+        <ul id="news"></ul>
       </section>
 
       <section id="tinker" aria-labelledby="tinker-title">
@@ -66,11 +105,6 @@
         <p id="confidence"></p>
         <ul id="reasons"></ul>
         <ul id="warnings"></ul>
-      </section>
-
-      <section id="checks-section" aria-labelledby="checks-title">
-        <h3 id="checks-title">Quick checks against the price</h3>
-        <dl id="checks"></dl>
       </section>
 
       <details id="numbers">
@@ -99,6 +133,29 @@
               <option value="Low">Show all</option>
             </select>
           </label>
+          <label>Lowest overall score
+            <select id="min-score">
+              <option value="0" selected>Any score</option>
+              <option value="3">3 or better</option>
+              <option value="3.5">3.5 or better</option>
+              <option value="4">4 or better</option>
+            </select>
+          </label>
+          <label>Analysts
+            <select id="min-buy">
+              <option value="0" selected>Any view</option>
+              <option value="0.5">Most rate it a buy</option>
+              <option value="0.75">Strong buy support</option>
+            </select>
+          </label>
+          <label>Dividend
+            <select id="min-yield">
+              <option value="0" selected>Any</option>
+              <option value="0.01">Pays a dividend</option>
+              <option value="2">2% yield or more</option>
+              <option value="4">4% yield or more</option>
+            </select>
+          </label>
           <label>Smallest company
             <select id="min-cap">
               <option value="0" selected>Any size</option>
@@ -117,7 +174,8 @@
                 <th scope="col">Company</th>
                 <th scope="col" data-sort="price"><button type="button">Price</button></th>
                 <th scope="col" data-sort="fair"><button type="button">Fair value</button></th>
-                <th scope="col" data-sort="gap"><button type="button">Gap</button></th>
+                <th scope="col" data-sort="gap"><button type="button">Upside</button></th>
+                <th scope="col" data-sort="score"><button type="button">Score</button></th>
                 <th scope="col" data-sort="confidence"><button type="button">Confidence</button></th>
               </tr>
             </thead>
@@ -131,7 +189,7 @@
 
   <footer>
     <p>An estimate from public filings, not financial advice. Small changes to the assumptions can move the result a lot.</p>
-    <p>Accounts from the SEC, share prices from Finnhub, bond yields from the US Treasury.</p>
+    <p>Accounts from the SEC, market and analyst data from Finnhub, bond yields from the US Treasury.</p>
   </footer>
   <script type="module" src="js/app.js"></script>
 </body>

@@ -21,6 +21,16 @@ export function loadCompanies() {
   return companiesRequest;
 }
 
+let screenerRequest;
+
+export function loadScreener() {
+  screenerRequest ??= fetch('data/screener.json', { cache: 'no-cache' })
+    .then(response => (response.ok ? response.json() : { rows: [] }))
+    .then(data => data.rows ?? [])
+    .catch(() => []);
+  return screenerRequest;
+}
+
 export function searchTickers(list, text, limit = 6) {
   const query = text.trim().toUpperCase();
   if (!query) return [];

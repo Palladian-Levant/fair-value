@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { extractCompany, mergeFacts, UnsupportedFilerError } from '../docs/js/extract.js';
-import { addSectorMultiples, analyse, discountedCashFlow, residualIncome, impliedByPrice, valueRange } from '../docs/js/model.js';
+import { addScores, addSectorMultiples, analyse, discountedCashFlow, FORECAST_WEIGHT, residualIncome, impliedByPrice, valueRange } from '../docs/js/model.js';
 import { COMPANIES, buildFacts } from './fixtures.mjs';
 
 const near = (actual, expected, tolerance = 1e-6) =>
@@ -95,7 +95,7 @@ test('default assumptions stay inside their limits', () => {
   for (const key of ['KO', 'NVDA', 'F']) {
     const { assumptions: a } = run(key).valuation;
     assert.ok(a.rate >= 0.08 && a.rate <= 0.12, key);
-    assert.ok(a.growth >= 0 && a.growth <= 0.25, key);
+    assert.ok(a.growth >= 0 && a.growth <= 0.35, key);
     assert.ok(a.margin > 0 && a.margin <= 0.6, key);
     assert.equal(a.terminal, 0.03);
   }
@@ -200,7 +200,7 @@ test('a rebound after operating losses is not treated as lasting growth', () => 
   });
   const result = analyse(extractCompany(facts, { sic: 3674 }), { price: 100, beta: 1.2, riskFree: 0.045, today: '2026-11-05' });
   assert.equal(result.type, 'cyclical');
-  assert.ok(result.valuation.assumptions.growth <= 0.04);
+  assert.ok(result.valuation.assumptions.growth <= 0.05);
 });
 
 test('a value far from the price and a capex jump both lower confidence', () => {
@@ -271,7 +271,7 @@ test('heavy investment is not counted as a cost and a source of growth', () => {
     balance: { asOf: '2026-09-30', items: { Assets: 1000000, StockholdersEquity: 677500, CashAndCashEquivalentsAtCarryingValue: 56300, ShortTermInvestments: 208800, LongTermDebtNoncurrent: 127500 } },
   });
   const co = extractCompany(facts, { sic: 7370 });
-  const result = analyse(co, { price: 284.31, beta: 1.25, riskFree: 0.049, peHistory: [25, 22, 27], sectorPe: 30, today: '2026-11-05' });
+  const result = analyse(co, { price: 284.31, beta: 1.25, riskFree: 0.049, peHistory: [25, 22, 27], sector: { pe: 30 }, today: '2026-11-05' });
   assert.ok(result.valuation.assumptions.margin > 0.3);
   assert.ok(result.range.model > 150, `forecast ${result.range.model}`);
   assert.ok(result.range.base > 200, `blended ${result.range.base}`);
@@ -279,19 +279,60 @@ test('heavy investment is not counted as a cost and a source of growth', () => {
   assert.match(earnings.note, /gains on investments/);
 });
 
-test('fair value blends the forecast with usual and sector multiples', () => {
+test('fair value combines a forecast with trimmed market models', () => {
   const c = COMPANIES.KO;
   const co = extractCompany(c.facts, { sic: c.sic });
   const market = { price: c.price, beta: c.beta, riskFree: 0.049, today: '2026-11-05' };
   const alone = analyse(co, market);
-  assert.deepEqual(alone.valuation.fixed.anchors, []);
+  assert.deepEqual(alone.valuation.fixed.marketModels, []);
   near(alone.range.base, alone.range.model);
-  const full = analyse(co, { ...market, peHistory: [24, 22, 25], sectorPe: 20 });
-  const [history, sector] = full.valuation.fixed.anchors;
-  near(full.range.base, 0.5 * full.range.model + 0.25 * history.value + 0.25 * sector.value, 1e-9);
+  const series = { pe: [['2025', 24], ['2024', 22], ['2023', 25]], evEbitda: [['2025', 20], ['2024', 19], ['2023', 21]], ps: [['2025', 6], ['2024', 5.5], ['2023', 6.5]] };
+  const full = analyse(co, {
+    ...market, series, stats: { enterpriseValue: 440000, evEbitdaTTM: 25, forwardPE: 27, forwardPEG: 3.5 }, sector: { pe: 21, evEbitda: 16 },
+  });
+  const models = full.valuation.fixed.marketModels;
+  assert.equal(models.length, 5);
+  const sorted = models.map(m => m.value).sort((x, y) => x - y).slice(1, -1);
+  near(full.range.base, FORECAST_WEIGHT * full.range.model + (1 - FORECAST_WEIGHT) * (sorted[0] + sorted[1] + sorted[2]) / 3, 1e-9);
   assert.ok(full.range.bear < full.range.base && full.range.base < full.range.bull);
   const oneYear = analyse(co, { ...market, peHistory: [24] });
-  assert.equal(oneYear.valuation.fixed.anchors.length, 0);
+  assert.equal(oneYear.valuation.fixed.marketModels.length, 0);
+});
+
+test('analyst expectations come from forward P/E and PEG', () => {
+  const c = COMPANIES.NVDA;
+  const co = extractCompany(c.facts, { sic: c.sic });
+  const market = { price: 180, beta: 1.5, riskFree: 0.049, today: '2026-11-05' };
+  const without = analyse(co, market).valuation;
+  const withView = analyse(co, { ...market, stats: { forwardPE: 15, forwardPEG: 0.3 } }).valuation;
+  assert.match(withView.explain.growth, /analysts expect about 50%/);
+  assert.ok(withView.assumptions.growth >= without.assumptions.growth);
+  assert.ok(withView.assumptions.growth <= 0.35);
+});
+
+test('cyclical companies do not use peak forward earnings', () => {
+  const c = COMPANIES.F;
+  const co = extractCompany(c.facts, { sic: c.sic });
+  const series = { pe: [['2025', 10], ['2024', 11], ['2023', 12]] };
+  const market = { price: c.price, riskFree: 0.049, series, today: '2026-11-05' };
+  const plain = analyse(co, market).valuation.fixed.marketModels[0].value;
+  const peak = analyse(co, { ...market, stats: { forwardPE: 2 } }).valuation.fixed.marketModels[0].value;
+  near(peak, plain);
+});
+
+test('scores rank companies from 1 to 5', () => {
+  const entry = (sic, stats) => ({ co: { sic }, market: { stats } });
+  const companies = {
+    A: entry(2080, { revenueGrowth3Y: 20, operatingMarginTTM: 30, '26WeekPriceReturnDaily': 10, 'totalDebt/totalEquityQuarterly': 0.1 }),
+    B: entry(2080, { revenueGrowth3Y: 5, operatingMarginTTM: 10, '26WeekPriceReturnDaily': -5, 'totalDebt/totalEquityQuarterly': 2 }),
+    C: entry(6021, { revenueGrowth3Y: 10, operatingMarginTTM: 20, '26WeekPriceReturnDaily': 2, 'totalDebt/totalEquityQuarterly': 9 }),
+  };
+  addScores(companies, { A: 0.3, B: -0.3, C: 0 });
+  assert.equal(companies.A.market.scores.growth, 5);
+  assert.equal(companies.B.market.scores.growth, 1);
+  assert.equal(companies.A.market.scores.value, 5);
+  assert.equal(companies.C.market.scores.strength, null);
+  assert.ok(companies.A.market.scores.overall > companies.B.market.scores.overall);
 });
 
 test('sector multiples ignore loss-makers and extreme readings', () => {
@@ -304,8 +345,8 @@ test('sector multiples ignore loss-makers and extreme readings', () => {
     F: entry(2080, 900, -5), G: entry(2080, 5000, 10),
   };
   addSectorMultiples(companies);
-  near(companies.A.market.sectorPe, 200 / (10 * 0.79), 1e-9);
-  near(companies.F.market.sectorPe, companies.A.market.sectorPe);
+  near(companies.A.market.sector.pe, 200 / (10 * 0.79), 1e-9);
+  near(companies.F.market.sector.pe, companies.A.market.sector.pe);
 });
 
 test('companies filing as foreign issuers are refused clearly', () => {

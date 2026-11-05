@@ -10,14 +10,18 @@ const NUMERIC = {
   gap: row => row.gap,
   price: row => row.price,
   fair: row => row.fair,
-  confidence: row => row.score,
+  confidence: row => row.confidenceScore ?? 0,
+  score: row => row.score ?? 0,
   cap: row => row.cap,
 };
 
-export function filterRows(rows, { sector = 'all', minConfidence = 'Medium', minCap = 0 } = {}) {
+export function filterRows(rows, { sector = 'all', minConfidence = 'Medium', minCap = 0, minScore = 0, minBuy = 0, minYield = 0 } = {}) {
   return rows.filter(row => (sector === 'all' || row.sector === sector)
     && CONFIDENCE[row.confidence] >= CONFIDENCE[minConfidence]
-    && row.cap >= minCap);
+    && row.cap >= minCap
+    && (row.score ?? 0) >= minScore
+    && (row.buyShare ?? 0) >= minBuy
+    && (row.dividendYield ?? 0) >= minYield);
 }
 
 export function sortRows(rows, key = 'gap', direction = 'desc') {
@@ -57,11 +61,14 @@ function fitSelect(select) {
 }
 
 export async function initScreener() {
-  const filters = { sector: 'all', minConfidence: 'Medium', minCap: 0 };
+  const filters = { sector: 'all', minConfidence: 'Medium', minCap: 0, minScore: 0, minBuy: 0, minYield: 0 };
   const params = new URL(location.href).searchParams;
   const sector = $('sector');
   const confidence = $('min-confidence');
   const cap = $('min-cap');
+  const score = $('min-score');
+  const buy = $('min-buy');
+  const dividend = $('min-yield');
   let sortKey = 'gap';
   let direction = 'desc';
   let shown = PAGE;
@@ -103,9 +110,12 @@ export async function initScreener() {
       cell(row, 'Company', link, small(context));
       cell(row, 'Price', money(item.price));
       cell(row, 'Fair value', whole(item.fair), small(`${whole(item.low)} to ${whole(item.high)}`));
-      const gap = cell(row, 'Gap', small(signed(item.gap), 'gap'));
+      const gap = cell(row, 'Upside', small(signed(item.gap), 'gap'));
       if (item.price < item.low) gap.append(small('Below low estimate'));
+      const valuation = [item.forwardPE ? `Forward P/E ${item.forwardPE.toFixed(1)}` : null, item.dividendYield > 0 ? `Yield ${item.dividendYield.toFixed(1)}%` : null].filter(Boolean).join(', ');
+      cell(row, 'Score', item.score != null ? item.score.toFixed(1) : 'n/a', small(item.buyShare != null ? `${Math.round(item.buyShare * 100)}% buy` : ''));
       const trust = cell(row, 'Confidence', item.confidence, small(item.label));
+      if (valuation) trust.append(small(valuation));
       for (const flag of item.flags) trust.append(small(flag, 'flag'));
     }
     $('screen-table').querySelector('tbody')?.remove();
@@ -126,6 +136,9 @@ export async function initScreener() {
     filters.sector = sector.value;
     filters.minConfidence = confidence.value;
     filters.minCap = Number(cap.value);
+    filters.minScore = Number(score.value);
+    filters.minBuy = Number(buy.value);
+    filters.minYield = Number(dividend.value);
     fitSelect(sector);
     const url = new URL(location.href);
     if (filters.sector === 'all') url.searchParams.delete('sector');
@@ -134,7 +147,7 @@ export async function initScreener() {
     if (data) render();
   }
 
-  for (const control of [sector, confidence, cap]) control.addEventListener('change', changed);
+  for (const control of [sector, confidence, cap, score, buy, dividend]) control.addEventListener('change', changed);
 
   $('screen-table').addEventListener('click', event => {
     const button = event.target.closest('th[data-sort] button');

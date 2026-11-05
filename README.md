@@ -19,14 +19,16 @@ Data comes from SEC EDGAR, Finnhub (share prices and risk data) and the US Treas
 
 ## How companies are valued
 
-Fair value blends up to three methods:
+Fair value combines several models. The cash flow forecast counts for 35%, or book value
+and returns for banks and insurers. The rest is the average of market models, after
+dropping the highest and lowest:
 
-- 50% from a 10-year forecast, or book value and returns for banks and insurers
-- 25% from the price to earnings investors have usually paid for that company
-- 25% from the typical price to earnings in its sector
+- The company's usual P/E, EV/EBITDA and P/S, or P/B for banks and insurers
+- The typical P/E and EV/EBITDA in its sector, or P/B for banks and insurers
 
-If a company has no usable multiple, the forecast takes a larger share. Each company's page
-shows all three figures. Companies are sorted into a type first:
+Earnings use normal and analyst-expected figures together, and growth blends past results
+with analyst expectations worked out from forward P/E and PEG. Companies are sorted into a
+type first:
 
 | Type | Method | Defaults |
 |---|---|---|

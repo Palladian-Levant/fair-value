@@ -1,5 +1,6 @@
-import { loadCompanies, searchTickers } from './api.js';
-import { analyse, impliedByPrice, valueRange } from './model.js';
+import { loadCompanies, loadScreener, searchTickers } from './api.js';
+import { renderCompanyData } from './company.js';
+import { analyse, FORECAST_WEIGHT, impliedByPrice, valueRange } from './model.js';
 import { initScreener } from './screener.js';
 
 const $ = id => document.getElementById(id);
@@ -193,13 +194,16 @@ function impliedText(a, assumptions) {
 }
 
 function renderMethods(a, range) {
-  const { anchors = [] } = a.valuation.fixed;
-  const modelShare = Math.round((1 - 0.25 * anchors.length) * 100);
-  const methods = [
-    { label: a.valuation.kind === 'dcf' ? 'Cash flow forecast' : 'Book value and returns', value: range.model, detail: `${modelShare}% of the fair value` },
-    ...anchors.map(anchor => ({ label: anchor.label, value: anchor.value, detail: `${anchor.detail}, 25% of the fair value` })),
+  const models = a.valuation.fixed.marketModels ?? [];
+  const forecastLabel = a.valuation.kind === 'dcf' ? 'Cash flow forecast' : 'Book value and returns';
+  const rows = [
+    { label: forecastLabel, value: range.model, detail: models.length ? `${Math.round(FORECAST_WEIGHT * 100)}% of the fair value` : 'The only model available' },
+    ...models,
   ];
-  $('methods').replaceChildren(...methods.map(method => {
+  $('methods-note').textContent = models.length >= 5
+    ? `The other ${models.length} models make up ${Math.round((1 - FORECAST_WEIGHT) * 100)}%. They are averaged after dropping the highest and lowest.`
+    : models.length ? `The other ${models.length === 1 ? 'model makes' : `${models.length} models make`} up ${Math.round((1 - FORECAST_WEIGHT) * 100)}%.` : '';
+  $('methods').replaceChildren(...rows.map(method => {
     const group = document.createElement('div');
     const term = document.createElement('dt');
     term.textContent = method.label;
@@ -278,25 +282,6 @@ function fillList(element, items) {
   }));
 }
 
-function renderChecks(checks) {
-  $('checks-section').hidden = !checks.length;
-  $('checks').replaceChildren(...checks.map(check => {
-    const group = document.createElement('div');
-    const term = document.createElement('dt');
-    term.textContent = check.label;
-    const detail = document.createElement('dd');
-    const figure = document.createElement('span');
-    figure.className = 'figure';
-    figure.textContent = check.value;
-    const note = document.createElement('span');
-    note.className = 'note';
-    note.textContent = check.note;
-    detail.append(figure, note);
-    group.append(term, detail);
-    return group;
-  }));
-}
-
 function renderHistory(a) {
   const { annual, ttm, balance, shares } = a.co;
   const fcf = row => (row.ocf != null && row.capex != null ? row.ocf - row.capex - (row.sbc ?? 0) : null);
@@ -326,9 +311,11 @@ function renderHistory(a) {
 
 function render() {
   const { analysis: a, row } = state;
+  const nextEarnings = a.market.nextEarnings ? ` Next earnings ${new Date(a.market.nextEarnings).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })}.` : '';
   const priceDate = a.market.today ? new Date(a.market.today).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' }) : null;
-  $('company').textContent = `${row.ticker}, ${a.label.toLowerCase()}${a.co.sicDescription ? `, ${a.co.sicDescription.toLowerCase()}` : ''}.${priceDate ? ` Price from ${priceDate}.` : ''}`;
-  renderChecks(a.checks);
+  $('company').textContent = `${row.ticker}, ${a.label.toLowerCase()}${a.co.sicDescription ? `, ${a.co.sicDescription.toLowerCase()}` : ''}.${priceDate ? ` Price from ${priceDate}.` : ''}${nextEarnings}`;
+  loadScreener().then(rows => { if (state?.analysis === a) renderCompanyData(a, rows); });
+  renderCompanyData(a);
   renderHistory(a);
 
   const hasValue = a.fairValueAvailable;
@@ -342,7 +329,7 @@ function render() {
     $('confidence').replaceChildren();
     const level = document.createElement('strong');
     level.textContent = `${a.confidence.level} confidence.`;
-    $('confidence').append(level, ` Valued as a ${a.label.toLowerCase()} using ${a.valuation.kind === 'dcf' ? 'a 10-year discounted cash flow' : 'book value and future returns'}. This rates how well the method fits the company, not whether the value is right.`);
+    $('confidence').append(level, ` Valued as a ${a.label.toLowerCase()} using ${(a.valuation.fixed.marketModels?.length ?? 0) + 1} valuation models. This rates how well the method fits the company, not whether the value is right.`);
     fillList($('reasons'), a.confidence.reasons);
     fillList($('warnings'), a.warnings);
     renderSliders();

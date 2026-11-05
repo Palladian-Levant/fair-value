@@ -37,7 +37,18 @@ function companyData({ sparse = false } = {}) {
     const co = extractCompany(c.facts, { sic: c.sic, sicDescription: c.sicDescription });
     const market = sparse ? { today: '2026-11-05' } : {
       price: c.price, beta: c.beta, week52High: c.price * 1.15, week52Low: c.price * 0.8,
-      peHistory: [24, 22, 25], companyName: c.displayName, riskFree: 0.041, today: '2026-11-05',
+      companyName: c.displayName, riskFree: 0.041, today: '2026-11-05', nextEarnings: '2027-02-02',
+      series: { pe: [['2025', 24], ['2024', 22], ['2023', 25], ['2022', 21]], ps: [['2025', 6], ['2024', 5.5], ['2023', 5]], evEbitda: [['2025', 18], ['2024', 17], ['2023', 16]], roic: [['2025', 0.2], ['2024', 0.18], ['2023', 0.17]] },
+      stats: { forwardPE: 22, forwardPEG: 2.5, enterpriseValue: c.price * 5000, evEbitdaTTM: 18, peTTM: 25, psTTM: 6, pb: 8, operatingMarginTTM: 30, revenueGrowth3Y: 8, 'totalDebt/totalEquityQuarterly': 1.1, dividendYieldIndicatedAnnual: 2.1, '52WeekPriceReturnDaily': 12, '52WeekHigh': c.price * 1.15, '52WeekLow': c.price * 0.8 },
+      sector: { pe: 22, evEbitda: 15, pb: 2 },
+      scores: { overall: 3.6, value: 3, growth: 2.8, profitability: 4.5, strength: 3.9, momentum: 3.2 },
+      slow: {
+        analysts: [{ strongBuy: 8, buy: 20, hold: 7, sell: 1, strongSell: 0 }],
+        earnings: [{ period: '2026-09-30', actual: 0.8, estimate: 0.75, surprise: 6.7 }],
+        peers: ['PEP', 'KO'],
+        insiders: { buys: 1, sells: 4, bought: 150000, sold: 9000000 },
+        news: [{ headline: 'Example headline', source: 'Example', url: 'https://example.com/a', time: 1793000000 }, { headline: 'Unsafe link', source: 'X', url: 'javascript:alert(1)', time: 1793000000 }],
+      },
     };
     companies[c.ticker] = JSON.parse(JSON.stringify({ co, market }));
   }
@@ -69,7 +80,7 @@ function screenData(daysOld) {
     ['JPM', 'JPMorgan Chase', 'Financials', 'Bank or insurer', 320.72, 246, 214, 277, 'Medium', 65, 852e9, []],
     ['F', 'Ford Motor', 'Consumer discretionary', 'Cyclical company', 13.5, 18, 9, 27, 'Low', 10, 54e9, ['Recent loss']],
   ].map(([ticker, name, sector, label, price, fair, low, high, confidence, score, cap, flags]) => ({
-    ticker, name, sector, label, price, fair, low, high, confidence, score, cap, flags, gap: fair / price - 1,
+    ticker, name, sector, label, price, fair, low, high, confidence, confidenceScore: score, score: score / 25, cap, flags, gap: fair / price - 1, forwardPE: 20, dividendYield: 2, buyShare: 0.6,
   }));
   return { generatedAt: new Date(Date.now() - daysOld * 864e5).toISOString(), attempted: 600, failed: 3, notValued: { Energy: 2, Technology: 8 }, rows };
 }
@@ -148,6 +159,7 @@ for (const [ticker, pattern, file] of [
 await check('the bank shows bank assumptions and a held-return message', async () => {
   assert.ok(await page.isVisible('#slider-roe'));
   assert.match(await page.textContent('#methods'), /Book value and returns/);
+  assert.match(await page.textContent('#methods'), /Its usual P\/E/);
   assert.match(await page.textContent('#implied'), /return on equity/);
 });
 
@@ -155,6 +167,7 @@ await check('loss-making company gets no made-up number', async () => {
   await search(page, 'LOSS');
   await page.waitForFunction(() => /No reliable fair value/.test(document.getElementById('headline').textContent));
   assert.equal(await page.isVisible('#tinker'), false);
+  assert.equal(await page.isVisible('#methods-section'), false);
   assert.equal(await page.isVisible('#scale'), false);
   await page.screenshot({ path: `${shots}/6-loss-making.png`, fullPage: true });
 });
@@ -206,9 +219,19 @@ await check('before the first update, the page says so', async () => {
 await check('the result shows the date of its price', async () => {
   await page.goto(`${site}?t=KO`);
   await page.waitForSelector('#result:not([hidden])');
-  assert.match(await page.textContent('#company'), /Price from 5 November/);
+  assert.match(await page.textContent('#company'), /Price from 5 November\. Next earnings 2 Feb/);
   assert.match(await page.textContent('#methods'), /Cash flow forecast/);
-  assert.match(await page.textContent('#methods'), /usual price to earnings/);
+  assert.match(await page.textContent('#methods'), /Its usual P\/E/);
+  assert.match(await page.textContent('#methods-note'), /dropping the highest and lowest/);
+  assert.match(await page.textContent('#scores'), /Profitability.*4\.5 \/ 5/s);
+  assert.match(await page.textContent('#stats'), /Forward P\/E22\.0/);
+  assert.equal(await page.locator('#charts svg').count(), 4);
+  assert.match(await page.textContent('#analyst-summary'), /28 of 36 analysts rate it a buy/);
+  await page.waitForFunction(() => /PepsiCo/.test(document.getElementById('peers-table').textContent));
+  assert.match(await page.textContent('#insiders'), /1 purchase worth/);
+  assert.equal(await page.locator('#news li').count(), 1);
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: `${shots}/14-company-full.png`, fullPage: true });
   const forecast = await page.textContent('#methods div:first-child .figure');
   await page.locator('#slider-growth').fill('0.15');
   assert.notEqual(await page.textContent('#methods div:first-child .figure'), forecast);
@@ -241,6 +264,9 @@ await check('screener filters by sector and confidence, and keeps the sector in 
   assert.match(await page.textContent('#screen-table tbody tr:first-child'), /Unusually large gap/);
   await page.waitForTimeout(150);
   await page.screenshot({ path: `${shots}/11-screener-energy.png`, fullPage: true });
+  await page.selectOption('#min-score', '3');
+  assert.equal(await page.locator('#screen-table tbody tr').count(), 0);
+  await page.selectOption('#min-score', '0');
   await page.selectOption('#min-cap', '200000000000');
   assert.equal(await page.locator('#screen-table tbody tr').count(), 2);
   await page.selectOption('#sector', 'Utilities');
