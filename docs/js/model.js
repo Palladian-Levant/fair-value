@@ -36,8 +36,10 @@ const TYPE_LABELS = {
 function cyclicalIndustry(sic) {
   if (!sic) return false;
   return (sic >= 1000 && sic <= 1499) // mining, oil and gas extraction
-    || sic === 2911 // oil refining
+    || (sic >= 2900 && sic <= 2999) // oil refining
+    || (sic >= 5171 && sic <= 5172) // fuel distribution
     || (sic >= 2800 && sic <= 2824) // basic chemicals
+    || (sic >= 2860 && sic <= 2879) // industrial and farm chemicals
     || (sic >= 3310 && sic <= 3369) // steel and metals
     || (sic >= 3711 && sic <= 3716) // car makers and parts
     || sic === 4512 // airlines
@@ -100,8 +102,12 @@ function classify(co, tax) {
   if (median(margins) <= 0 || recentLosses) return 'lossMaking';
   if (cyclicalIndustry(sic)) return 'cyclical';
   const g = growthRates(co);
-  // A fast rebound after operating losses is a cycle, not steady growth.
-  if (Math.max(g.short ?? 0, g.long ?? 0) >= 0.15 && Math.min(...margins) > 0) return 'growth';
+  // Fast growth counts only if revenue has not fallen sharply on the way. A rebound
+  // from a slump is a cycle, while a young company can have early losses behind it.
+  const sales = rows.map(r => r.revenue).filter(v => v > 0);
+  const slumped = sales.slice(1).some((value, i) => value < sales[i] * 0.9);
+  const profitableNow = (latest ?? margins.at(-1)) > 0 && margins.at(-1) > 0;
+  if (Math.max(g.short ?? 0, g.long ?? 0) >= 0.15 && profitableNow && !slumped) return 'growth';
   const swing = margins.length >= 3 ? stdev(margins) / Math.abs(mean(margins)) : 0;
   const lossYears = rows.filter(r => r.netIncome < 0).length;
   if (swing > 0.6 || lossYears >= 2 || Math.min(...margins) < 0) return 'cyclical';
@@ -142,7 +148,11 @@ function defaultMargin(rows, ttmMargin, type) {
   if (type === 'cyclical') {
     return { value: clamp(mean(all), 0.005, 0.6), reason: `Average across ${all.length} periods, covering good and bad years.` };
   }
-  return { value: clamp(median(all), 0.005, 0.6), reason: `Middle value across ${all.length} periods, so one unusual year does not skew it.` };
+  const middle = median(all);
+  if (ttmMargin != null && ttmMargin < middle * 0.7) {
+    return { value: clamp((middle + ttmMargin) / 2, 0.005, 0.6), reason: 'Recent margins have fallen well below normal, so this does not assume a full recovery.' };
+  }
+  return { value: clamp(middle, 0.005, 0.6), reason: `Middle value across ${all.length} periods, so one unusual year does not skew it.` };
 }
 
 // How much profit a company earns on the money tied up in the business.

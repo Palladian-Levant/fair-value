@@ -187,6 +187,11 @@ export function extractCompany(factsFile, submissions = {}) {
     throw new UnsupportedFilerError(`${name} reports in a currency other than US dollars, which this version does not read.`);
   }
 
+  const filings = Object.values(gaap.Assets?.units ?? {}).flat().sort((a, b) => (a.filed ?? '').localeCompare(b.filed ?? ''));
+  if (/^(20-F|40-F|6-K)/.test(filings.at(-1)?.form ?? '')) {
+    throw new UnsupportedFilerError(`${name} files as a foreign company, so its shares and currency may not match its US-listed price. This version does not value these.`);
+  }
+
   const flows = {};
   const annualMaps = {};
   for (const [key, tags] of Object.entries(TAGS)) {

@@ -308,6 +308,37 @@ test('sector multiples ignore loss-makers and extreme readings', () => {
   near(companies.F.market.sectorPe, companies.A.market.sectorPe);
 });
 
+test('companies filing as foreign issuers are refused clearly', () => {
+  const facts = structuredClone(COMPANIES.KO.facts);
+  facts.facts['us-gaap'].Assets.units.USD.push({ end: '2026-09-30', val: 1, form: '20-F', filed: '2026-10-30' });
+  assert.throws(() => extractCompany(facts, {}), UnsupportedFilerError);
+});
+
+test('a young company with early losses can still be a fast grower', () => {
+  const facts = buildFacts({
+    name: 'RIDE CO', cik: 12, shares: 2000,
+    years: [
+      { end: '2022-12-31', revenue: 20000, opIncome: -1500, netIncome: -3000, ocf: 700, capex: 300 },
+      { end: '2023-12-31', revenue: 28000, opIncome: 1000, netIncome: 1800, ocf: 3500, capex: 200 },
+      { end: '2024-12-31', revenue: 36000, opIncome: 2800, netIncome: 3500, ocf: 7000, capex: 250 },
+      { end: '2025-12-31', revenue: 44000, opIncome: 5000, netIncome: 5500, ocf: 9000, capex: 300 },
+    ],
+    balance: { asOf: '2025-12-31', items: { Assets: 60000, StockholdersEquity: 25000, CashAndCashEquivalentsAtCarryingValue: 7000, LongTermDebtNoncurrent: 9000 } },
+  });
+  assert.equal(analyse(extractCompany(facts, { sic: 7370 }), { price: 70, today: '2026-11-05' }).type, 'growth');
+});
+
+test('a steady company whose margins have fallen is not assumed to recover fully', () => {
+  const c = COMPANIES.KO;
+  const co = structuredClone(extractCompany(c.facts, { sic: c.sic }));
+  const market = { price: c.price, today: '2026-11-05' };
+  const normal = analyse(co, market).valuation.assumptions.margin;
+  co.ttm.opIncome = co.ttm.revenue * normal * 0.4;
+  const fallen = analyse(co, market).valuation;
+  near(fallen.assumptions.margin, (normal * 0.4 + normal) / 2, 0.03);
+  assert.match(fallen.explain.margin, /does not assume a full recovery/);
+});
+
 test('health insurers use the forecast, not the bank method', () => {
   const c = COMPANIES.KO;
   assert.equal(analyse(extractCompany(c.facts, { sic: 6324 }), { price: c.price, today: '2026-11-05' }).valuation.kind, 'dcf');
