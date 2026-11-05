@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fair Value</title>
+  <meta name="description" content="Estimate what a US stock is worth from its SEC filings, then change the assumptions yourself.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f4c46'/%3E%3Crect x='5' y='15' width='22' height='3' rx='1.5' fill='%23a8dcc9'/%3E%3Crect x='19' y='7' width='4' height='18' rx='2' fill='%23ffc42e'/%3E%3C/svg%3E">
+  <link rel="preload" href="fonts/bricolage-grotesque-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav aria-label="Main">
+    <a id="nav-value" href="./">Value a stock</a>
+    <a id="nav-screen" href="./?view=screener">Screen stocks</a>
+  </nav>
+  <main>
+    <form id="search" role="search" autocomplete="off">
+      <h1>
+        <label for="ticker">What is</label>
+        <span class="field">
+          <input id="ticker" type="text" placeholder="KO" spellcheck="false" autocapitalize="characters"
+            role="combobox" aria-expanded="false" aria-controls="suggestions" aria-autocomplete="list" aria-describedby="hint">
+          <ul id="suggestions" role="listbox" aria-label="Matching companies" hidden></ul>
+        </span>
+        <span class="tail">worth?</span>
+      </h1>
+      <p id="hint">Type a ticker or company name from the largest US companies, then press Enter.</p>
+      <p id="examples">
+        Try
+        <button type="button" data-ticker="KO">Coca-Cola</button>,
+        <button type="button" data-ticker="NVDA">Nvidia</button>,
+        <button type="button" data-ticker="F">Ford</button> or
+        <button type="button" data-ticker="JPM">JPMorgan</button>
+      </p>
+    </form>
+
+    <p id="status" role="status" aria-live="polite" hidden></p>
+
+    <article id="result" hidden>
+      <header class="verdict">
+        <p id="company"></p>
+        <h2 id="headline"></h2>
+        <p id="subline"></p>
+      </header>
+
+      <div id="scale" class="scale" role="img"></div>
+
+      <p id="implied"></p>
+
+      <section id="tinker" aria-labelledby="tinker-title">
+        <div class="section-head">
+          <h3 id="tinker-title">Change the assumptions</h3>
+          <button id="reset" type="button" disabled>Reset to defaults</button>
+        </div>
+        <div id="sliders"></div>
+      </section>
+
+      <section id="trust" aria-labelledby="trust-title">
+        <h3 id="trust-title">How much to trust this</h3>
+        <p id="confidence"></p>
+        <ul id="reasons"></ul>
+        <ul id="warnings"></ul>
+      </section>
+
+      <section id="checks-section" aria-labelledby="checks-title">
+        <h3 id="checks-title">Quick checks against the price</h3>
+        <dl id="checks"></dl>
+      </section>
+
+      <details id="numbers">
+        <summary>See the figures behind this</summary>
+        <div class="table-wrap"><table id="history"></table></div>
+        <p id="sources"></p>
+      </details>
+    </article>
+
+    <section id="screener" aria-labelledby="screen-title" hidden>
+      <h1 id="screen-title">
+        <span>Which</span>
+        <span class="pick"><select id="sector" aria-label="Sector"><option value="all">US</option></select></span>
+        <span>stocks look cheapest?</span>
+      </h1>
+      <span id="sector-ruler" aria-hidden="true"></span>
+      <p id="screen-age"></p>
+      <p id="screen-status" role="status" hidden></p>
+      <div id="screen-results" hidden>
+        <p id="screen-caution">A big gap can mean a bargain, or that the model has missed a problem. Treat this as a list to research, not a list to buy.</p>
+        <div class="filters">
+          <label>Lowest confidence
+            <select id="min-confidence">
+              <option value="High">High only</option>
+              <option value="Medium" selected>Medium or high</option>
+              <option value="Low">Show all</option>
+            </select>
+          </label>
+          <label>Smallest company
+            <select id="min-cap">
+              <option value="0" selected>Any size</option>
+              <option value="10000000000">$10bn</option>
+              <option value="50000000000">$50bn</option>
+              <option value="200000000000">$200bn</option>
+            </select>
+          </label>
+        </div>
+        <p id="screen-count" role="status"></p>
+        <div class="screen-wrap">
+          <table id="screen-table">
+            <thead>
+              <tr>
+                <th scope="col">Company</th>
+                <th scope="col" data-sort="price"><button type="button">Price</button></th>
+                <th scope="col" data-sort="fair"><button type="button">Fair value</button></th>
+                <th scope="col" data-sort="gap"><button type="button">Gap</button></th>
+                <th scope="col" data-sort="confidence"><button type="button">Confidence</button></th>
+              </tr>
+            </thead>
+          </table>
+        </div>
+        <p id="screen-empty" hidden>No companies match these filters. Try a lower confidence level or any company size.</p>
+        <button id="show-more" type="button" hidden>Show 50 more</button>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>An estimate from public filings, not financial advice. Small changes to the assumptions can move the result a lot.</p>
+    <p>Accounts from the SEC, share prices from Finnhub, bond yields from the US Treasury.</p>
+  </footer>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
