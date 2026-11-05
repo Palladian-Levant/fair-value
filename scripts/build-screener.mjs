@@ -17,6 +17,42 @@ const DATA_FOLDER = path.join(path.dirname(fileURLToPath(import.meta.url)), '..'
 const OUTPUT = path.join(DATA_FOLDER, 'screener.json');
 const COMPANIES_OUTPUT = path.join(DATA_FOLDER, 'companies.json');
 
+const STAT_KEYS = ['forwardPE', 'forwardPEG', 'peTTM', 'pegTTM', 'psTTM', 'pb', 'pfcfShareTTM', 'evEbitdaTTM', 'evRevenueTTM', 'enterpriseValue',
+  'marketCapitalization', 'epsTTM', 'epsAnnual', 'revenuePerShareTTM', 'bookValuePerShareQuarterly', 'tangibleBookValuePerShareQuarterly', 'cashFlowPerShareTTM',
+  'grossMarginTTM', 'grossMargin5Y', 'operatingMarginTTM', 'operatingMargin5Y', 'netProfitMarginTTM', 'netProfitMargin5Y', 'roeTTM', 'roe5Y', 'roiTTM', 'roi5Y', 'roaTTM',
+  'revenueGrowthTTMYoy', 'revenueGrowthQuarterlyYoy', 'revenueGrowth3Y', 'revenueGrowth5Y', 'epsGrowthTTMYoy', 'epsGrowthQuarterlyYoy', 'epsGrowth3Y', 'epsGrowth5Y', 'focfCagr5Y', 'ebitdaCagr5Y',
+  'currentRatioQuarterly', 'quickRatioQuarterly', 'totalDebt/totalEquityQuarterly', 'longTermDebt/equityQuarterly', 'netInterestCoverageTTM',
+  'dividendYieldIndicatedAnnual', 'dividendPerShareTTM', 'dividendGrowthRate5Y', 'payoutRatioTTM',
+  '5DayPriceReturnDaily', '13WeekPriceReturnDaily', '26WeekPriceReturnDaily', '52WeekPriceReturnDaily', 'yearToDatePriceReturnDaily', 'priceRelativeToS&P50052Week', 'priceRelativeToS&P50026Week',
+  '52WeekHigh', '52WeekLow', 'beta'];
+const SERIES_KEYS = ['pe', 'ps', 'pb', 'pfcf', 'evEbitda', 'roic', 'operatingMargin', 'netMargin', 'fcfMargin', 'eps', 'totalDebtToEquity'];
+
+export function pickStats(metric = {}) {
+  return Object.fromEntries(STAT_KEYS.filter(key => typeof metric[key] === 'number').map(key => [key, Number(metric[key].toFixed(4))]));
+}
+
+export function pickSeries(series = {}) {
+  const picked = {};
+  for (const key of SERIES_KEYS) {
+    const points = (series[key] ?? []).slice(0, 10).filter(point => typeof point.v === 'number');
+    if (points.length) picked[key] = points.map(point => [point.period.slice(0, 4), Number(point.v.toFixed(3))]);
+  }
+  return picked;
+}
+
+export function summariseInsiders(data = [], today = new Date()) {
+  const cutoff = new Date(today.getTime() - 182 * 864e5).toISOString().slice(0, 10);
+  const trades = data.filter(t => (t.transactionDate ?? '') >= cutoff && (t.transactionCode === 'P' || t.transactionCode === 'S'));
+  const value = code => trades.filter(t => t.transactionCode === code)
+    .reduce((sum, t) => sum + Math.abs(t.change ?? 0) * (t.transactionPrice ?? 0), 0);
+  return {
+    buys: trades.filter(t => t.transactionCode === 'P').length,
+    sells: trades.filter(t => t.transactionCode === 'S').length,
+    bought: Math.round(value('P')),
+    sold: Math.round(value('S')),
+  };
+}
+
 // New holding companies start with no history at the SEC.
 const PREDECESSORS = { '0002115436': '0000034088' }; // ExxonMobil
 
@@ -122,7 +158,39 @@ export function scoreCompanies(companies, { keep = KEEP, notValued = [] } = {}) 
   return { notValued: counts, rows: rows.slice(0, keep) };
 }
 
-export async function buildScreener({ tickers, sec, finnhub, plain, now = new Date(), log = () => {}, keep = KEEP, limit = CANDIDATES }) {
+// Analyst views, peers, insiders and news change slowly, and the free plan is
+// rate limited, so each company refreshes these about once a week.
+async function slowData(symbol, finnhub, now, ticker) {
+  const quiet = async request => { try { return await request; } catch { return null; } };
+  const date = offset => new Date(now.getTime() - offset * 864e5).toISOString().slice(0, 10);
+  const recommendations = await quiet(finnhub(`https://finnhub.io/api/v1/stock/recommendation?symbol=${symbol}`));
+  const earnings = await quiet(finnhub(`https://finnhub.io/api/v1/stock/earnings?symbol=${symbol}`));
+  const peers = await quiet(finnhub(`https://finnhub.io/api/v1/stock/peers?symbol=${symbol}`));
+  const insiders = await quiet(finnhub(`https://finnhub.io/api/v1/stock/insider-transactions?symbol=${symbol}`));
+  const news = await quiet(finnhub(`https://finnhub.io/api/v1/company-news?symbol=${symbol}&from=${date(10)}&to=${date(0)}`));
+  return {
+    updated: date(0),
+    analysts: (recommendations ?? []).slice(0, 4),
+    earnings: (earnings ?? []).slice(0, 4).map(e => ({ period: e.period, actual: e.actual, estimate: e.estimate, surprise: e.surprisePercent })),
+    peers: (peers ?? []).map(p => p.replace('.', '-')).filter(p => p !== ticker).slice(0, 8),
+    insiders: summariseInsiders(insiders?.data, now),
+    news: (news ?? []).slice(0, 3).map(n => ({ headline: n.headline, source: n.source, url: n.url, time: n.datetime })),
+  };
+}
+
+export async function earningsDates(finnhub, now) {
+  const date = offset => new Date(now.getTime() + offset * 864e5).toISOString().slice(0, 10);
+  try {
+    const file = await finnhub(`https://finnhub.io/api/v1/calendar/earnings?from=${date(0)}&to=${date(100)}`);
+    const dates = {};
+    for (const entry of file?.earningsCalendar ?? []) dates[entry.symbol] ??= entry.date;
+    return dates;
+  } catch {
+    return {};
+  }
+}
+
+export async function buildScreener({ tickers, sec, finnhub, plain, now = new Date(), log = () => {}, keep = KEEP, limit = CANDIDATES, previous = {} }) {
   const today = now.toISOString().slice(0, 10);
   let riskFree;
   try {
@@ -132,6 +200,8 @@ export async function buildScreener({ tickers, sec, finnhub, plain, now = new Da
   }
 
   const candidates = candidateList(tickers ?? await sec('https://www.sec.gov/files/company_tickers.json'), limit);
+  const nextEarnings = await earningsDates(finnhub, now);
+  const dayNumber = Math.floor(now.getTime() / 864e5);
   const rows = [];
   const notValued = [];
   const companies = {};
@@ -157,12 +227,17 @@ export async function buildScreener({ tickers, sec, finnhub, plain, now = new Da
         week52High: metric?.metric?.['52WeekHigh'],
         week52Low: metric?.metric?.['52WeekLow'],
         peHistory: (metric?.series?.annual?.pe ?? []).slice(0, 10).map(point => point.v),
+        stats: pickStats(metric?.metric),
+        series: pickSeries(metric?.series?.annual),
+        nextEarnings: nextEarnings[candidate.ticker.replace('-', '.')],
         companyName: profile?.name,
         finnhubShares: profile?.shareOutstanding > 0 ? profile.shareOutstanding * 1e6 : undefined,
         marketCap: profile?.marketCapitalization > 0 ? profile.marketCapitalization * 1e6 : undefined,
         riskFree,
         today,
       };
+      const old = previous[candidate.ticker]?.market?.slow;
+      market.slow = old && index % 5 !== dayNumber % 5 ? old : await slowData(symbol, finnhub, now, candidate.ticker);
       companies[candidate.ticker] = { co: company, market };
     } catch (error) {
       // Foreign shares and funds in the SEC's list often have no accounts there.
@@ -202,7 +277,11 @@ async function main() {
   const plain = pacedClient({ gapMs: 500, headers: { Accept: 'application/xml' } });
 
   const trialSize = Number(process.env.SCREEN_LIMIT) || 0;
-  const result = await buildScreener({ sec, finnhub, plain, log: console.log, limit: trialSize || CANDIDATES });
+  let previous = {};
+  try {
+    previous = JSON.parse(await readFile(COMPANIES_OUTPUT, 'utf8')).companies;
+  } catch { /* first run */ }
+  const result = await buildScreener({ sec, finnhub, plain, log: console.log, limit: trialSize || CANDIDATES, previous });
   let previousCount = 0;
   try {
     previousCount = JSON.parse(await readFile(OUTPUT, 'utf8')).rows.length;
@@ -214,6 +293,13 @@ async function main() {
     process.exit(1);
   }
   const { companies, ...screener } = result;
+  if (trialSize) {
+    // Trials must not replace the published results.
+    await mkdir(path.join(DATA_FOLDER, 'trial'), { recursive: true });
+    await writeFile(path.join(DATA_FOLDER, 'trial', 'companies.json'), JSON.stringify({ generatedAt: result.generatedAt, companies }));
+    console.log(`Saved a trial of ${Object.keys(companies).length} companies.`);
+    return;
+  }
   await mkdir(DATA_FOLDER, { recursive: true });
   await writeFile(`${OUTPUT}.tmp`, JSON.stringify(screener));
   await writeFile(`${COMPANIES_OUTPUT}.tmp`, JSON.stringify({ generatedAt: result.generatedAt, companies }));
