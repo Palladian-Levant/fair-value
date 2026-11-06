@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { extractCompany, mergeFacts, UnsupportedFilerError } from '../docs/js/extract.js';
-import { addScores, addSectorMultiples, analyse, discountedCashFlow, FORECAST_WEIGHT, residualIncome, impliedByPrice, valueRange } from '../docs/js/model.js';
+import { addScores, addSectorMultiples, analyse, analystView, discountedCashFlow, FORECAST_WEIGHT, residualIncome, impliedByPrice, valueRange } from '../docs/js/model.js';
 import { COMPANIES, buildFacts } from './fixtures.mjs';
 
 const near = (actual, expected, tolerance = 1e-6) =>
@@ -378,6 +378,36 @@ test('a steady company whose margins have fallen is not assumed to recover fully
   const fallen = analyse(co, market).valuation;
   near(fallen.assumptions.margin, (normal * 0.4 + normal) / 2, 0.03);
   assert.match(fallen.explain.margin, /does not assume a full recovery/);
+});
+
+test('analyst forecasts set growth, margin, earnings and a price target model', () => {
+  const c = COMPANIES.KO;
+  const co = extractCompany(c.facts, { sic: c.sic });
+  const last = co.annual.at(-1).revenue;
+  const fmp = {
+    estimates: [
+      { end: '2026-12-31', revenue: last * 1.06, ebit: last * 1.06 * 0.32, eps: 3.2, analysts: 20 },
+      { end: '2027-12-31', revenue: last * 1.06 * 1.06, ebit: last * 1.06 * 1.06 * 0.33, eps: 3.5, analysts: 18 },
+    ],
+    target: { consensus: 80, median: 79, high: 90, low: 65 },
+  };
+  const market = { price: c.price, beta: c.beta, riskFree: 0.049, today: '2026-11-05' };
+  const view = analystView({ ...market, fmp }, co);
+  near(view.growth, 0.06, 1e-9);
+  near(view.margin, 0.33, 1e-9);
+  assert.equal(view.eps, 3.2);
+  const result = analyse(co, { ...market, fmp });
+  assert.match(result.valuation.explain.growth, /analysts expect about 6% a year/);
+  const target = result.valuation.fixed.marketModels.find(m => m.key === 'target');
+  assert.equal(target.value, 80);
+  const absurd = analyse(co, { ...market, fmp: { ...fmp, target: { consensus: c.price * 10, high: 1, low: 1 } } });
+  assert.ok(!absurd.valuation.fixed.marketModels.some(m => m.key === 'target'));
+});
+
+test('without forecasts, analyst growth falls back to forward ratios', () => {
+  const view = analystView({ price: 100, stats: { forwardPE: 20, forwardPEG: 2 } }, null);
+  assert.equal(view.source, 'ratios');
+  near(view.growth, 0.1, 1e-12);
 });
 
 test('health insurers use the forecast, not the bank method', () => {

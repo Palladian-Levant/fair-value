@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildScreener, candidateList, isSafeToPublish, pacedClient, parseTreasury, summariseInsiders } from '../scripts/build-screener.mjs';
+import { buildScreener, candidateList, isSafeToPublish, pacedClient, parseTreasury, refreshFmp, fmpNeedsRefresh, summariseInsiders } from '../scripts/build-screener.mjs';
 import { sectorOf, SECTORS } from '../docs/js/sectors.js';
 import { daysOld, filterRows, sortRows } from '../docs/js/screener.js';
 import { COMPANIES, TICKERS } from './fixtures.mjs';
@@ -157,6 +157,40 @@ test('slow data is reused between refreshes', async () => {
   if (dayNumber % 5 !== 0) assert.deepEqual(result.companies.KO.market.slow.peers, ['PEP']);
   assert.ok(result.companies.KO.market.stats);
   assert.ok(calls >= 3);
+});
+
+test('forecasts refresh within the daily budget, oldest first, and blocked companies are skipped', async () => {
+  const entry = (cap, fmp) => ({ co: { shares: { val: 1 } }, market: { price: cap, fmp } });
+  const companies = {
+    A: entry(100), B: entry(300), C: entry(200, { updated: '2026-11-04', estimates: [] }),
+    D: entry(50, { updated: '2026-10-01', estimates: [] }), E: entry(400, { updated: '2026-10-20', blocked: true }),
+  };
+  const calls = [];
+  const fmp = async url => {
+    calls.push(url);
+    if (url.includes('symbol=B') && url.includes('analyst-estimates')) throw Object.assign(new Error('status 402'), { status: 402 });
+    if (url.includes('analyst-estimates')) return [{ date: '2027-12-31', revenueAvg: 10, ebitAvg: 2, epsAvg: 1, numAnalystsEps: 5 }, { date: '2020-12-31', revenueAvg: 9 }];
+    if (url.includes('price-target')) return [{ targetConsensus: 12, targetMedian: 12, targetHigh: 15, targetLow: 9 }];
+    return [{ strongBuy: 1, buy: 2, hold: 3, sell: 0, strongSell: 0, consensus: 'Buy' }];
+  };
+  const refreshed = await refreshFmp(companies, fmp, '2026-11-06', 7);
+  assert.equal(refreshed, 2);
+  assert.deepEqual(companies.B.market.fmp, { updated: '2026-11-06', blocked: true });
+  assert.equal(companies.D.market.fmp.estimates.length, 1);
+  assert.equal(companies.A.market.fmp.target.consensus, 12);
+  assert.equal(companies.C.market.fmp.updated, '2026-11-04');
+  assert.equal(companies.E.market.fmp.blocked, true);
+  assert.ok(calls.length <= 7);
+  assert.equal(await refreshFmp(companies, null, '2026-11-06'), 0);
+  const fresh = { X: entry(10), Y: entry(5) };
+  const limited = async url => {
+    if (url.includes('price-target')) throw Object.assign(new Error('status 429'), { status: 429 });
+    return [{ date: '2027-12-31', revenueAvg: 10 }];
+  };
+  assert.equal(await refreshFmp(fresh, limited, '2026-11-06'), 0);
+  assert.equal(fresh.X.market.fmp, undefined);
+  assert.equal(fmpNeedsRefresh({ updated: '2026-10-01', blocked: true }, '2026-11-06'), true);
+  assert.equal(fmpNeedsRefresh({ updated: '2026-11-01' }, '2026-11-06'), false);
 });
 
 test('filters and sorting on the screener', () => {

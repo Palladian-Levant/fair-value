@@ -41,6 +41,7 @@ jobs:
         env:
           SEC_CONTACT_EMAIL: ${{ secrets.SEC_CONTACT_EMAIL }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           SCREEN_LIMIT: ${{ inputs.limit }}
         run: node scripts/build-screener.mjs
 

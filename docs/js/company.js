@@ -127,18 +127,60 @@ function renderCharts(a) {
   $('charts').replaceChildren(...charts);
 }
 
+function renderTarget(a) {
+  const target = a.market.fmp?.target;
+  const box = $('target');
+  box.hidden = !target;
+  if (!target) return;
+  const price = a.market.price;
+  const upside = price ? (target.consensus / price - 1) * 100 : null;
+  box.replaceChildren(
+    make('span', 'figure', money(target.consensus)),
+    make('span', 'note', `Average analyst price target${upside != null ? `, ${signed(upside)} from the share price` : ''}. Targets range from ${money(target.low)} to ${money(target.high)}.`),
+  );
+}
+
+function renderForecasts(a) {
+  const years = a.market.fmp?.estimates ?? [];
+  const table = $('forecast-table');
+  table.hidden = !years.length;
+  if (!years.length) return;
+  const last = a.co.annual.at(-1);
+  const head = make('thead');
+  const headRow = head.insertRow();
+  for (const text of ['Year', 'Revenue', 'Growth', 'Operating margin', 'Earnings per share']) headRow.append(make('th', null, text));
+  const body = make('tbody');
+  let previous = last?.revenue;
+  for (const year of years) {
+    const row = body.insertRow();
+    row.insertCell().textContent = `Year to ${year.end.slice(0, 7)}`;
+    row.insertCell().textContent = bigMoney(year.revenue);
+    row.insertCell().textContent = previous > 0 ? signed((year.revenue / previous - 1) * 100) : 'n/a';
+    row.insertCell().textContent = year.ebit != null && year.revenue > 0 ? pct((year.ebit / year.revenue) * 100) : 'n/a';
+    row.insertCell().textContent = year.eps != null ? `$${year.eps.toFixed(2)}` : 'n/a';
+    previous = year.revenue;
+  }
+  table.replaceChildren(head, body);
+}
+
 function renderAnalysts(a) {
-  const latest = a.market.slow?.analysts?.[0];
+  const fmpGrades = a.market.fmp?.grades;
+  const latest = fmpGrades && fmpGrades.buy + fmpGrades.hold + fmpGrades.sell > 0 ? fmpGrades : a.market.slow?.analysts?.[0];
   const earnings = a.market.slow?.earnings ?? [];
   const s = a.market.stats ?? {};
+  const years = a.market.fmp?.estimates ?? [];
   const total = latest ? latest.strongBuy + latest.buy + latest.hold + latest.sell + latest.strongSell : 0;
-  $('analysts-section').hidden = !total && !earnings.length;
+  $('analysts-section').hidden = !total && !earnings.length && !years.length && !a.market.fmp?.target;
+  renderTarget(a);
+  renderForecasts(a);
   const summary = [];
   if (total) {
     const buys = latest.strongBuy + latest.buy;
-    summary.push(`${buys} of ${total} analysts rate it a buy, ${latest.hold} a hold and ${latest.sell + latest.strongSell} a sell.`);
+    summary.push(`${buys} of ${total} analyst ratings are buys, ${latest.hold} holds and ${latest.sell + latest.strongSell} sells.`);
   }
-  if (s.forwardPE > 0 && a.market.price) {
+  if (years[0]?.analysts) {
+    summary.push(`Forecasts below are the average of ${years[0].analysts} analysts.`);
+  } else if (s.forwardPE > 0 && a.market.price) {
     summary.push(`Expected earnings per share are about $${(a.market.price / s.forwardPE).toFixed(2)}.`);
   }
   $('analyst-summary').textContent = summary.join(' ');

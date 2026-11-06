@@ -26,8 +26,12 @@ dropping the highest and lowest:
 - The company's usual P/E, EV/EBITDA and P/S, or P/B for banks and insurers
 - The typical P/E and EV/EBITDA in its sector, or P/B for banks and insurers
 
-Earnings use normal and analyst-expected figures together, and growth blends past results
-with analyst expectations worked out from forward P/E and PEG. Companies are sorted into a
+Where Financial Modeling Prep's free plan covers a company, the average analyst price target
+is added as another market model, and analysts' revenue, margin and earnings forecasts feed
+the defaults. Otherwise expectations are worked out from forward P/E and PEG. Earnings use
+normal and analyst-expected figures together, and growth blends past results with analyst
+expectations. The free plan allows 250 requests a day, so forecasts refresh for about 80
+companies a night. Companies are sorted into a
 type first:
 
 | Type | Method | Defaults |

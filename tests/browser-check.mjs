@@ -41,6 +41,12 @@ function companyData({ sparse = false } = {}) {
       series: { pe: [['2025', 24], ['2024', 22], ['2023', 25], ['2022', 21]], ps: [['2025', 6], ['2024', 5.5], ['2023', 5]], evEbitda: [['2025', 18], ['2024', 17], ['2023', 16]], roic: [['2025', 0.2], ['2024', 0.18], ['2023', 0.17]] },
       stats: { forwardPE: 22, forwardPEG: 2.5, enterpriseValue: c.price * 5000, evEbitdaTTM: 18, peTTM: 25, psTTM: 6, pb: 8, operatingMarginTTM: 30, revenueGrowth3Y: 8, 'totalDebt/totalEquityQuarterly': 1.1, dividendYieldIndicatedAnnual: 2.1, '52WeekPriceReturnDaily': 12, '52WeekHigh': c.price * 1.15, '52WeekLow': c.price * 0.8 },
       sector: { pe: 22, evEbitda: 15, pb: 2 },
+      fmp: c.ticker === 'KO' ? {
+        updated: '2026-11-06',
+        estimates: [{ end: '2026-12-31', revenue: 50e9, ebit: 15.5e9, eps: 3.2, analysts: 20 }, { end: '2027-12-31', revenue: 53e9, ebit: 17e9, eps: 3.5, analysts: 18 }],
+        target: { consensus: 90, median: 89, high: 100, low: 75 },
+        grades: { strongBuy: 2, buy: 20, hold: 8, sell: 1, strongSell: 0, consensus: 'Buy' },
+      } : undefined,
       scores: { overall: 3.6, value: 3, growth: 2.8, profitability: 4.5, strength: 3.9, momentum: 3.2 },
       slow: {
         analysts: [{ strongBuy: 8, buy: 20, hold: 7, sell: 1, strongSell: 0 }],
@@ -226,7 +232,10 @@ await check('the result shows the date of its price', async () => {
   assert.match(await page.textContent('#scores'), /Profitability.*4\.5 \/ 5/s);
   assert.match(await page.textContent('#stats'), /Forward P\/E22\.0/);
   assert.equal(await page.locator('#charts svg').count(), 4);
-  assert.match(await page.textContent('#analyst-summary'), /28 of 36 analysts rate it a buy/);
+  assert.match(await page.textContent('#analyst-summary'), /22 of 31 analyst ratings are buys/);
+  assert.match(await page.textContent('#target'), /\$90.*Average analyst price target/);
+  assert.equal(await page.locator('#forecast-table tbody tr').count(), 2);
+  assert.match(await page.textContent('#methods'), /Analyst price target/);
   await page.waitForFunction(() => /PepsiCo/.test(document.getElementById('peers-table').textContent));
   assert.match(await page.textContent('#insiders'), /1 purchase worth/);
   assert.equal(await page.locator('#news li').count(), 1);

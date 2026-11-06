@@ -195,6 +195,73 @@ async function slowData(symbol, finnhub, now, ticker) {
   };
 }
 
+// Analyst forecasts from Financial Modeling Prep. The free plan allows 250
+// requests a day and covers only some companies, so each night refreshes the
+// companies with the oldest data, and blocked companies are retried monthly.
+const FMP_DAILY_BUDGET = 240;
+const FMP_REFRESH_DAYS = 6;
+const FMP_BLOCKED_RETRY_DAYS = 30;
+
+export function fmpNeedsRefresh(entry, today) {
+  if (!entry?.updated) return true;
+  const age = (Date.parse(today) - Date.parse(entry.updated)) / 864e5;
+  return age >= (entry.blocked ? FMP_BLOCKED_RETRY_DAYS : FMP_REFRESH_DAYS);
+}
+
+export function pickFmpData(estimates, target, grades, today) {
+  const years = (Array.isArray(estimates) ? estimates : [])
+    .filter(e => e.date >= today && e.revenueAvg > 0)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(0, 3)
+    .map(e => ({
+      end: e.date, revenue: e.revenueAvg, ebit: e.ebitAvg, netIncome: e.netIncomeAvg,
+      eps: e.epsAvg, epsLow: e.epsLow, epsHigh: e.epsHigh, analysts: e.numAnalystsEps ?? e.numAnalystsRevenue ?? null,
+    }));
+  const t = Array.isArray(target) ? target[0] : null;
+  const g = Array.isArray(grades) ? grades[0] : null;
+  return {
+    updated: today,
+    estimates: years,
+    target: t?.targetConsensus > 0 ? { consensus: t.targetConsensus, median: t.targetMedian, high: t.targetHigh, low: t.targetLow } : null,
+    grades: g ? { strongBuy: g.strongBuy, buy: g.buy, hold: g.hold, sell: g.sell, strongSell: g.strongSell, consensus: g.consensus } : null,
+  };
+}
+
+export async function refreshFmp(companies, fmp, today, budget = FMP_DAILY_BUDGET, log = () => {}) {
+  if (!fmp) return 0;
+  const due = Object.entries(companies)
+    .filter(([, entry]) => fmpNeedsRefresh(entry.market.fmp, today))
+    .sort((a, b) => (a[1].market.fmp?.updated ?? '').localeCompare(b[1].market.fmp?.updated ?? '') || b[1].market.price * (b[1].co.shares?.val ?? 0) - a[1].market.price * (a[1].co.shares?.val ?? 0));
+  let used = 0;
+  let refreshed = 0;
+  for (const [ticker, entry] of due) {
+    if (used + 3 > budget) break;
+    const symbol = encodeURIComponent(ticker.replace('-', '.'));
+    used += 1;
+    let estimates;
+    try {
+      estimates = await fmp(`https://financialmodelingprep.com/stable/analyst-estimates?symbol=${symbol}&period=annual&limit=10`);
+    } catch (error) {
+      if (error.status === 402 || error.status === 403) entry.market.fmp = { updated: today, blocked: true };
+      if (error.status === 429) break;
+      continue;
+    }
+    used += 2;
+    let limited = false;
+    const quiet = async url => {
+      try { return await fmp(url); } catch (error) { if (error.status === 429) limited = true; return null; }
+    };
+    const target = await quiet(`https://financialmodelingprep.com/stable/price-target-consensus?symbol=${symbol}`);
+    const grades = await quiet(`https://financialmodelingprep.com/stable/grades-consensus?symbol=${symbol}`);
+    // Out of requests for today, so keep the older data and stop.
+    if (limited) break;
+    entry.market.fmp = pickFmpData(estimates, target, grades, today);
+    refreshed += 1;
+  }
+  log(`Analyst forecasts refreshed for ${refreshed} companies using ${used} requests.`);
+  return refreshed;
+}
+
 export async function earningsDates(finnhub, now) {
   const date = offset => new Date(now.getTime() + offset * 864e5).toISOString().slice(0, 10);
   try {
@@ -207,7 +274,7 @@ export async function earningsDates(finnhub, now) {
   }
 }
 
-export async function buildScreener({ tickers, sec, finnhub, plain, now = new Date(), log = () => {}, keep = KEEP, limit = CANDIDATES, previous = {} }) {
+export async function buildScreener({ tickers, sec, finnhub, plain, fmp, now = new Date(), log = () => {}, keep = KEEP, limit = CANDIDATES, previous = {} }) {
   const today = now.toISOString().slice(0, 10);
   let riskFree;
   try {
@@ -255,6 +322,7 @@ export async function buildScreener({ tickers, sec, finnhub, plain, now = new Da
       };
       const old = previous[candidate.ticker]?.market?.slow;
       market.slow = old && index % 5 !== dayNumber % 5 ? old : await slowData(symbol, finnhub, now, candidate.ticker);
+      if (previous[candidate.ticker]?.market?.fmp) market.fmp = previous[candidate.ticker].market.fmp;
       companies[candidate.ticker] = { co: company, market };
     } catch (error) {
       // Foreign shares and funds in the SEC's list often have no accounts there.
@@ -263,6 +331,7 @@ export async function buildScreener({ tickers, sec, finnhub, plain, now = new Da
     }
   }
 
+  await refreshFmp(companies, fmp, today, FMP_DAILY_BUDGET, log);
   const scored = scoreCompanies(companies, { keep, notValued });
   return {
     generatedAt: now.toISOString(),
@@ -292,13 +361,17 @@ async function main() {
   const sec = pacedClient({ gapMs: SEC_GAP_MS, headers: { 'User-Agent': `FairValueTool ${contact}`, Accept: 'application/json' } });
   const finnhub = pacedClient({ gapMs: FINNHUB_GAP_MS, headers: { 'X-Finnhub-Token': key } });
   const plain = pacedClient({ gapMs: 500, headers: { Accept: 'application/xml' } });
+  // The FMP key must go in the address. The client never logs or saves addresses.
+  const fmpKey = process.env.FMP_API_KEY;
+  const fmpClient = fmpKey ? pacedClient({ gapMs: 300, headers: { Accept: 'application/json' } }) : null;
+  const fmp = fmpClient ? url => fmpClient(`${url}&apikey=${encodeURIComponent(fmpKey)}`) : null;
 
   const trialSize = Number(process.env.SCREEN_LIMIT) || 0;
   let previous = {};
   try {
     previous = JSON.parse(await readFile(COMPANIES_OUTPUT, 'utf8')).companies;
   } catch { /* first run */ }
-  const result = await buildScreener({ sec, finnhub, plain, log: console.log, limit: trialSize || CANDIDATES, previous });
+  const result = await buildScreener({ sec, finnhub, plain, fmp, log: console.log, limit: trialSize || CANDIDATES, previous });
   let previousCount = 0;
   try {
     previousCount = JSON.parse(await readFile(OUTPUT, 'utf8')).rows.length;

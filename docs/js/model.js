@@ -125,11 +125,28 @@ function capitalCost(co, market, tax) {
 }
 
 // Forward P/E divided by forward PEG gives the growth analysts expect.
-function analystView(market) {
+// Analyst forecasts from FMP are preferred. Without them, forward P/E divided
+// by forward PEG gives the growth analysts expect.
+export function analystView(market, co) {
+  const years = market.fmp?.estimates ?? [];
+  const lastRevenue = co?.annual?.at(-1)?.revenue;
+  if (years.length && lastRevenue > 0) {
+    const ahead = years.slice(0, 2);
+    const last = ahead.at(-1);
+    const growth = (last.revenue / lastRevenue) ** (1 / ahead.length) - 1;
+    const margin = last.ebit != null && last.revenue > 0 ? last.ebit / last.revenue : null;
+    return {
+      source: 'forecasts',
+      eps: years[0].eps > 0 ? years[0].eps : null,
+      growth: growth > -0.3 && growth < 1.5 ? growth : null,
+      margin: margin > -0.5 && margin < 0.8 ? margin : null,
+      analysts: years[0].analysts,
+    };
+  }
   const { forwardPE, forwardPEG } = market.stats ?? {};
   const eps = forwardPE > 0 && market.price > 0 ? market.price / forwardPE : null;
   const growth = forwardPE > 0 && forwardPEG > 0 ? forwardPE / forwardPEG / 100 : null;
-  return { eps, growth: growth > 0.005 && growth < 1 ? growth : null };
+  return { source: 'ratios', eps, growth: growth > 0.005 && growth < 1 ? growth : null, margin: null };
 }
 
 function defaultGrowth(g, type, analystGrowth) {
@@ -143,7 +160,7 @@ function defaultGrowth(g, type, analystGrowth) {
     reason += '. Cyclical companies get a low long-run rate, so one good stretch is not projected forward';
   } else if (analystGrowth != null) {
     raw = (raw + analystGrowth) / 2;
-    reason += `, and analysts expect about ${percent(analystGrowth, 0)}. This uses the middle of the two`;
+    reason += `, and analysts expect about ${percent(analystGrowth, 0)} a year. This uses the middle of the two`;
   } else if (slowing) {
     reason += `, and growth has slowed to ${percent(g.recent, 0)} recently`;
   }
@@ -193,8 +210,18 @@ function buildDcf(co, market, type, warnings) {
   const ttmMargin = operatingMargin(ttm, tax);
 
   const cost = capitalCost(co, market, tax);
-  const growth = defaultGrowth(g, type, analystView(market).growth);
+  const view = analystView(market, co);
+  const growth = defaultGrowth(g, type, view.growth);
   const margin = defaultMargin(rows, ttmMargin, type);
+  // Analysts' expected operating margin matters most where margins are changing fast.
+  if (view.margin != null && type !== 'cyclical' && view.margin > 0) {
+    const weight = type === 'growth' ? 0.5 : 0.3;
+    const blendedMargin = clamp((1 - weight) * margin.value + weight * view.margin, 0.005, 0.6);
+    if (Math.abs(blendedMargin - margin.value) > 0.005) {
+      margin.reason += ` Blended with the ${percent(view.margin, 0)} margin analysts forecast.`;
+      margin.value = blendedMargin;
+    }
+  }
 
   const debt = balance.debt ?? 0;
   const marketCap = market.price && co.shares ? market.price * co.shares.val : null;
@@ -391,7 +418,8 @@ function buildMarketModels(valuation, market, type) {
     if (multiple > 0 && value > 0) models.push({ key, label, detail: `${multiple.toFixed(1)} times ${unit}`, value });
   };
   const normal = normalEarnings(valuation);
-  const expected = analystView(market).eps;
+  const view = analystView(market, valuation.co);
+  const expected = view.eps;
   // Cyclical peaks flatter forward earnings, so those use normal earnings only.
   const earnings = type !== 'cyclical' && expected > 0 ? mean([normal, expected].filter(v => v > 0)) : normal;
   const earningsUnit = type !== 'cyclical' && expected > 0 ? 'normal and expected earnings' : 'normal earnings';
@@ -417,6 +445,11 @@ function buildMarketModels(valuation, market, type) {
     if (usual) add('historyPb', 'Its usual P/B', usual, 'book value', usual * fixed.bvps);
     const sector = market.sector?.pb ? clamp(market.sector.pb, 0.3, 8) : null;
     if (sector) add('sectorPb', 'Sector P/B', sector, 'book value', sector * fixed.bvps);
+  }
+  // The analysts' average price target, as Investing.com and others include it.
+  const target = market.fmp?.target;
+  if (target?.consensus > 0 && market.price > 0 && target.consensus < market.price * 4) {
+    models.push({ key: 'target', label: 'Analyst price target', detail: `Average of analysts, from $${Math.round(target.low)} to $${Math.round(target.high)}`, value: target.consensus });
   }
   return models;
 }
@@ -656,6 +689,7 @@ export function analyse(co, marketInput = {}) {
     return { type, label, co, market, fairValueAvailable: false, reason: 'Its book value is zero or negative, so this method cannot be used.', checks: senseChecks(co, market, null), warnings };
   }
   companyWarnings(co, market, warnings, type);
+  valuation.co = co;
   valuation.fixed.marketModels = buildMarketModels(valuation, market, type);
   const range = valueRange(valuation, valuation.assumptions);
   const checks = senseChecks(co, market, valuation);
